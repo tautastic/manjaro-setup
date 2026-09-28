@@ -1,0 +1,26 @@
+unmap F5
+unmap [index] F5
+unmap [fullscreen] F5
+unmap [presentation] F5
+unmap F11
+unmap [index] F11
+unmap [fullscreen] F11
+unmap [presentation] F11
+set selection-clipboard clipboard
+
+set guioptions	"s"
+set recolor	"true"
+map <C-f>   toggle_fullscreen
+map <C-p>   toggle_presentation
+map F   display_link
+map [fullscreen] <C-f>   toggle_fullscreen
+map [fullscreen] F   display_link
+map [fullscreen] f   follow
+map [index] <C-f>   toggle_fullscreen
+map [index] <C-p>   toggle_presentation
+map [index] F   display_link
+map [index] f   follow
+map [presentation] <C-p>   toggle_presentation
+map [presentation] F   display_link
+map [presentation] f   follow
+map f   follow

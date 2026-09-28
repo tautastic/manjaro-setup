@@ -1,0 +1,7 @@
+[Default Applications]
+text/vnd.graphviz=xdot.desktop
+audio/mpeg=io.bassi.Amberol.desktop
+x-scheme-handler/claude-cli=claude-code-url-handler.desktop
+
+[Added Associations]
+audio/mpeg=librewolf.desktop;io.bassi.Amberol.desktop;

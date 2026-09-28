@@ -1,0 +1,32 @@
+#compdef git-identity gid
+
+local -a identities subcommands
+identities=( ${XDG_CONFIG_HOME:-$HOME/.config}/git/identities/*(N:t) )
+subcommands=(
+  'list:list every configured identity'
+  'status:show the identity of this repository'
+  'check:ask github.com who a key authenticates as'
+  'clone:clone as an identity and keep using it'
+  'help:show usage'
+)
+
+case $CURRENT in
+  2)
+    _describe -t identities 'identity' identities
+    _describe -t subcommands 'subcommand' subcommands
+    ;;
+  *)
+    case ${words[2]} in
+      use | check)
+        _describe -t identities 'identity' identities
+        ;;
+      clone)
+        case $CURRENT in
+          3) _describe -t identities 'identity' identities ;;
+          4) _message 'repository url' ;;
+          *) _directories ;;
+        esac
+        ;;
+    esac
+    ;;
+esac

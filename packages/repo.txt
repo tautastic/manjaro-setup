@@ -1,0 +1,83 @@
+# Packages from the Manjaro/Arch repos. One per line; # starts a comment.
+
+### base system + filesystem/hardware tooling
+acpid
+btrfs-progs
+cryptsetup
+lvm2
+e2fsprogs
+dosfstools
+exfatprogs
+f2fs-tools
+jfsutils
+xfsprogs
+ntfs-3g
+dmidecode
+dmraid
+efibootmgr
+networkmanager
+openssh
+usbutils
+which
+curl
+wget
+rsync
+less
+
+### shell
+zsh
+zsh-completions
+zsh-syntax-highlighting
+stow
+xdg-user-dirs
+
+### cli tools
+ffmpeg
+7zip
+jq
+poppler
+fd
+fzf
+zoxide
+imagemagick
+eza
+perl-image-exiftool
+wl-clipboard
+
+### terminal / editor / file manager / reader / browser
+kitty
+vis
+yazi
+zathura
+zathura-pdf-mupdf
+librewolf
+git
+
+### gui apps kept from GNOME + extras
+gnome-disk-utility
+nautilus
+loupe
+showtime
+anki
+picard
+amberol
+
+### toolchains kept globally (gcc, gnumake, go, nodejs, pnpm, biome)
+gcc
+make
+go
+nodejs
+npm
+pnpm
+biome
+
+### fonts
+noto-fonts
+noto-fonts-emoji
+ttf-jetbrains-mono
+ttf-jetbrains-mono-nerd
+ttf-scheherazade-new
+
+### secrets tooling (redact) and qt dark theme so Anki follows prefer-dark
+qt6ct
+age

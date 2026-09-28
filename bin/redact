@@ -1,0 +1,489 @@
+#!/usr/bin/env bash
+# Linked redaction / unredaction for config repos.
+#
+# One age-encrypted map of TOKEN -> real value is the pivot. `mirror` walks it
+# forwards (real value -> @@<NAME>@@) to produce a publishable tree; `hydrate`
+# walks it backwards (@@<NAME>@@ -> real value), prompting for anything missing
+# and saving the answer. `verify` proves the two are inverses.
+#
+#   redact init   [repo]            create the age key and an empty map
+#   redact show   [repo]            print the map
+#   redact edit   [repo]            edit the map in $EDITOR
+#   redact set    <repo> <NAME>     set one value, read from stdin
+#   redact mirror [<src> <dst>]     publishable copy of src, tokenised
+#   redact hydrate [repo]           fill *.tmpl -> sibling without .tmpl
+#   redact hydrate --into <dir> <repo>
+#                                   reconstruct a full working tree from a repo
+#   redact check  [repo]            scan for anything the map does not cover
+#   redact verify [<src> <dst>]     round-trip: hydrate(mirror(src)) == src
+#
+# The map is secrets.age inside the repo: safe to commit, useless without
+# ~/.config/age/key.txt.
+
+set -uo pipefail
+
+AGE_KEY="${REDACT_AGE_KEY:-$HOME/.config/age/key.txt}"
+MAP_NAME="secrets.age"
+TOKEN_RE='@@[A-Z][A-Z0-9_]*@@'
+
+RED=$'\033[31m'; GRN=$'\033[32m'; YLW=$'\033[33m'; BLU=$'\033[34m'; DIM=$'\033[2m'; RST=$'\033[0m'
+log()  { printf '%s==>%s %s\n' "$BLU" "$RST" "$*"; }
+ok()   { printf '%s  ok%s %s\n' "$GRN" "$RST" "$*"; }
+warn() { printf '%s warn%s %s\n' "$YLW" "$RST" "$*" >&2; }
+die()  { printf '%sfail%s %s\n' "$RED" "$RST" "$*" >&2; exit 1; }
+
+_TMP=()
+_cleanup() { local d; for d in ${_TMP[@]+"${_TMP[@]}"}; do rm -rf "$d"; done; }
+trap _cleanup EXIT
+mk_tmpdir()  { local d; d=$(mktemp -d) || return 1; _TMP+=("$d"); printf '%s' "$d"; }
+mk_tmpfile() { local f; f=$(mktemp "$@") || return 1; _TMP+=("$f"); printf '%s' "$f"; }
+
+need_age() {
+  command -v age >/dev/null || die "age is not installed"
+}
+
+# ---------------------------------------------------------------- the map
+# Plaintext form, so multi-line values need no escaping:
+#     ### NAME
+#     value, possibly
+#     spanning lines
+#     ### NEXT
+map_path() { printf '%s/%s\n' "${1:-.}" "$MAP_NAME"; }
+
+map_decrypt() {                       # map_decrypt <repo>
+  local f; f=$(map_path "$1")
+  [[ -f $f ]] || return 1
+  need_age
+  [[ -f $AGE_KEY ]] || die "no age key at $AGE_KEY (run: redact init)"
+  age -d -i "$AGE_KEY" "$f" 2>/dev/null || die "could not decrypt $f with $AGE_KEY"
+}
+
+map_encrypt() {                       # map_encrypt <repo>  < plaintext
+  local f pub; f=$(map_path "$1")
+  need_age
+  pub=$(age-keygen -y "$AGE_KEY") || die "could not derive the public key from $AGE_KEY"
+  mkdir -p "$(dirname "$f")"
+  age -r "$pub" -o "$f" || die "encryption failed"
+}
+
+# Emit "NAME<TAB>base64(value)" -- base64 so multi-line values stay on one line.
+map_pairs() {                         # map_pairs <repo>
+  map_decrypt "$1" | perl -MMIME::Base64 -0777 -ne '
+    for my $chunk (split /^### /m, $_) {
+      next unless length $chunk;
+      my ($n, $v) = split /\n/, $chunk, 2;
+      next unless defined $n && length $n;
+      $v = "" unless defined $v;
+      $v =~ s/\n\z//;
+      print $n, "\t", encode_base64($v, ""), "\n";
+    }
+  '
+}
+
+map_get() {                           # map_get <repo> <NAME>
+  local b64
+  b64=$(map_pairs "$1" | awk -F'\t' -v n="$2" '$1 == n { print $2; hit = 1 } END { exit !hit }') \
+    || return 1
+  printf '%s' "$b64" | base64 -d
+}
+
+map_set() {                           # map_set <repo> <NAME> <value>
+  local repo=$1 name=$2 value=$3 tmp
+  tmp=$(mk_tmpfile)
+  { map_decrypt "$repo" 2>/dev/null || true; } | awk -v n="$name" '
+    /^### / { skip = (substr($0, 5) == n) }
+    !skip
+  ' > "$tmp"
+  { printf '### %s\n%s\n' "$name" "$value"; } >> "$tmp"
+  map_encrypt "$repo" < "$tmp"
+}
+
+# ------------------------------------------------------- redact / hydrate
+# Longest values first, so a short secret can never eat part of a longer one:
+# with GIT_USER=foobar and SYS_USER=foo, "foobar" is tokenised first, and the
+# "foo" rule afterwards only fires where a non-alphanumeric sits on both sides.
+sorted_pairs() {                      # sorted_pairs <repo>
+  map_pairs "$1" | while IFS=$'\t' read -r name b64; do
+    printf '%s\t%s\t%s\n' "$(printf '%s' "$b64" | base64 -d | wc -c)" "$name" "$b64"
+  done | sort -rn | cut -f2,3
+}
+
+# The map is handed to perl as DATA, never interpolated into perl source.
+# Interpolating a multi-line value breaks out of the s/// and corrupts the tree.
+_map_file() {                         # _map_file <repo>  -> path to NAME<TAB>b64
+  local f; f=$(mk_tmpfile)
+  sorted_pairs "$1" > "$f"
+  printf '%s' "$f"
+}
+
+_PERL_REDACT='
+use MIME::Base64;
+open(my $m, "<", $ENV{REDACT_MAP}) or die "map: $!";
+my $raw = do { local $/; <$m> };
+my @p;
+for my $line (split /\n/, $raw) {
+  my ($n, $b) = split /\t/, $line, 2;
+  next unless defined $b && length $b;
+  push @p, [$n, decode_base64($b)];
+}
+my $t = <>;
+for my $e (@p) {
+  my ($n, $v) = @$e;
+  next if $v eq "";
+  my $tok = "@@" . $n . "@@";
+  if ($v =~ /\n/) { $t =~ s/\Q$v\E/$tok/g }
+  else             { $t =~ s/(?<![A-Za-z0-9])\Q$v\E(?![A-Za-z0-9])/$tok/g }
+}
+print $t;
+'
+
+_PERL_HYDRATE='
+use MIME::Base64;
+open(my $m, "<", $ENV{REDACT_MAP}) or die "map: $!";
+my $raw = do { local $/; <$m> };
+my @p;
+for my $line (split /\n/, $raw) {
+  my ($n, $b) = split /\t/, $line, 2;
+  next unless defined $b && length $b;
+  push @p, [$n, decode_base64($b)];
+}
+my $t = <>;
+for my $e (@p) {
+  my ($n, $v) = @$e;
+  my $tok = "@@" . $n . "@@";
+  $t =~ s/\Q$tok\E/$v/g;
+}
+print $t;
+'
+
+_run_engine() {                       # _run_engine <repo> <tree> <perl-src>
+  local mapf; mapf=$(_map_file "$1")
+  [[ -s $mapf ]] || { warn "the map is empty -- nothing to do"; return 0; }
+  REDACT_MAP="$mapf" find "$2" -type f -print0 \
+    | REDACT_MAP="$mapf" xargs -0 -r -n1 perl -0777 -i -e "$3"
+}
+
+apply_redaction() { _run_engine "$1" "$2" "$_PERL_REDACT"; }
+apply_hydration() { _run_engine "$1" "$2" "$_PERL_HYDRATE"; }
+
+# Every @@<NAME>@@ present in a tree.
+tokens_in() { grep -rhoE "$TOKEN_RE" "$1" 2>/dev/null | sort -u | sed 's/^@@//; s/@@$//'; }
+
+# Ask for anything the map does not have yet, and remember the answer.
+fill_missing() {                      # fill_missing <repo> <tree>
+  local name missing=()
+  while read -r name; do
+    [[ -z $name ]] && continue
+    map_get "$1" "$name" >/dev/null 2>&1 || missing+=("$name")
+  done < <(tokens_in "$2")
+  [[ ${#missing[@]} -eq 0 ]] && return 0
+  log "${#missing[@]} token(s) have no value yet"
+  local val
+  for name in "${missing[@]}"; do
+    printf '%s  %s%s = ' "$DIM" "$name" "$RST" >&2
+    { IFS= read -r val </dev/tty; } 2>/dev/null || die "no terminal to prompt on; run: redact set $1 $name"
+    [[ -z $val ]] && die "$name cannot be empty"
+    map_set "$1" "$name" "$val"
+    ok "saved $name"
+  done
+}
+
+# --------------------------------------------------------------- scanner
+# The deny list is the map itself: anything with a token is by definition a
+# secret, so it never needs maintaining separately. These patterns catch the
+# structural things a map cannot know about.
+DENY_PATTERNS=(
+  "unix crypt password hash|\\\$(6|5|y|2[aby])\\\$[./A-Za-z0-9]"
+  "postgres SCRAM verifier|SCRAM-SHA-256\\\$[0-9]+:"
+  "private key block|BEGIN ([A-Z]+ )?PRIVATE KEY"
+  "hardware UUID|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+  "GitHub token|gh[pousr]_[A-Za-z0-9]{20,}"
+  "AWS access key|AKIA[0-9A-Z]{16}"
+  "Slack token|xox[baprs]-[0-9A-Za-z-]{10,}"
+  "hardcoded home directory|/home/(?!user\\b)[a-z][a-z0-9_-]*/"
+  "GitHub numeric account id|[1-9][0-9]{5,}\\+[A-Za-z0-9-]+@users\\.noreply\\.github\\.com"
+)
+ALLOW_MAIL='^(user@example\.invalid|00000000\+[A-Za-z0-9-]+@users\.noreply\.github\.com|git@github\.com|noreply@anthropic\.com)$'
+ALLOW_IP='^(127\.|10\.|0\.|255\.|169\.254\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[01])\.|203\.0\.113\.)'
+
+# Paths excluded from scanning: vendored upstream code, and the map itself.
+# A repo may add globs in .redactignore, one per line.
+repo_globs() {                        # repo_globs <repo> -- from .redactignore
+  [[ -f $1/.redactignore ]] && grep -vE '^[[:space:]]*(#|$)' "$1/.redactignore"
+  return 0
+}
+
+vendor_globs() {                      # vendor_globs <repo>
+  printf '%s\n' "$MAP_NAME"
+  repo_globs "$1"
+}
+
+# Cached, because is_excluded runs once per file per pattern -- and because
+# returning early from a `while read < <(...)` loop kills the producer mid-write,
+# which is what printed "grep: write error: Broken pipe" on every commit.
+_GLOBS_FOR=""
+_GLOBS=()
+load_globs() {                        # load_globs <repo>
+  [[ $_GLOBS_FOR == "$1" ]] && return 0
+  _GLOBS=()
+  local g
+  while IFS= read -r g; do
+    [[ -n $g ]] && _GLOBS+=("$g")
+  done < <(vendor_globs "$1")
+  _GLOBS_FOR=$1
+}
+
+is_excluded() {                       # is_excluded <repo> <path>
+  load_globs "$1"
+  local g
+  for g in ${_GLOBS[@]+"${_GLOBS[@]}"}; do
+    # shellcheck disable=SC2053  # glob match is intended
+    [[ $2 == $g ]] && return 0
+  done
+  return 1
+}
+
+scan_files() {                        # scan_files <repo> <mode>
+  local repo=$1 mode=$2 found=0 files=() f entry name b64 val line blob bad
+  local -a candidates
+
+  if [[ $mode == history ]]; then
+    :
+  else
+    if [[ $mode == staged ]]; then
+      mapfile -t candidates < <(git -C "$repo" diff --cached --name-only --diff-filter=ACM)
+    else
+      mapfile -t candidates < <(git -C "$repo" ls-files --cached --others --exclude-standard 2>/dev/null)
+      [[ ${#candidates[@]} -eq 0 ]] && \
+        mapfile -t candidates < <(cd "$repo" && find . -type f -not -path './.git/*' | sed 's|^\./||')
+    fi
+    for f in "${candidates[@]}"; do
+      [[ -f $repo/$f ]] || continue
+      is_excluded "$repo" "$f" && continue
+      files+=("$repo/$f")
+    done
+    [[ ${#files[@]} -eq 0 ]] && { ok "nothing to scan ($mode)"; return 0; }
+  fi
+
+  report() { printf '%s\n' "$1" >&2; printf '%s  ^^ %s%s\n\n' "$RED" "$2" "$RST" >&2; found=1; }
+
+  runscan() {                         # runscan <grep-flag> <pattern> <desc>
+    local h
+    if [[ $mode == history ]]; then
+      # shellcheck disable=SC2046  # rev-list must split into arguments
+      # honour .redactignore here too: the path sits between the first and
+      # second colon of "<sha>:<path>:<line>:..."
+      h=$(git -C "$repo" grep -In"$1" "$2" $(git -C "$repo" rev-list --all) 2>/dev/null \
+            | while IFS= read -r ln; do
+                pth=${ln#*:}; pth=${pth%%:*}
+                is_excluded "$repo" "$pth" || printf '%s\n' "$ln"
+              done | awk "NR<=20")
+    else
+      h=$(grep -In"$1" --binary-files=without-match "$2" "${files[@]}" 2>/dev/null \
+            | sed "s|^$repo/||")
+    fi
+    [[ -n $h ]] && report "$h" "$3"
+  }
+
+  for entry in "${DENY_PATTERNS[@]}"; do
+    runscan P "${entry#*|}" "${entry%%|*}"
+  done
+
+  # Every value in the map is, by definition, something that must not appear.
+  while IFS=$'\t' read -r name b64; do
+    val=$(printf '%s' "$b64" | base64 -d)
+    while IFS= read -r line; do
+      [[ ${#line} -lt 3 ]] && continue
+      runscan F "$line" "unredacted value of @@${name}@@"
+    done <<< "$val"
+  done < <(map_pairs "$repo" 2>/dev/null || true)
+
+  if [[ $mode != history ]]; then
+    blob=$(grep -Ioh --binary-files=without-match \
+             -E '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}|\b([0-9]{1,3}\.){3}[0-9]{1,3}\b' \
+             "${files[@]}" 2>/dev/null | sort -u)
+    if [[ -n $blob ]]; then
+      bad=$(printf '%s\n' "$blob" | grep -vE "$ALLOW_MAIL" | grep -vE "$ALLOW_IP")
+      [[ -n $bad ]] && report "$bad" "real email address or public IP"
+    fi
+  fi
+
+  if [[ $found -eq 0 ]]; then
+    ok "no secrets found ($mode)"
+    return 0
+  fi
+  printf '%sRefusing. Add these to the map (redact set) so they are tokenised.%s\n' "$RED" "$RST" >&2
+  return 1
+}
+
+# ------------------------------------------------------------- subcommands
+# Default source/destination for `mirror` and `verify`, so they can be run
+# with no arguments. Kept outside every repo, because a repo must never carry
+# the path of another one.
+#   ~/.config/redact/config
+#     MIRROR_SRC=/path/to/private/tree
+#     MIRROR_DST=/path/to/public/mirror
+REDACT_CONF="${REDACT_CONF:-$HOME/.config/redact/config}"
+MIRROR_SRC=""; MIRROR_DST=""
+# shellcheck source=/dev/null
+[[ -f $REDACT_CONF ]] && source "$REDACT_CONF"
+
+need_pair() {                         # need_pair <src> <dst>
+  [[ -n $1 && -n $2 ]] && return 0
+  die "no source/destination given.
+     Pass them:   redact $SUBCOMMAND <src> <dst>
+     Or set them: MIRROR_SRC=... MIRROR_DST=... in $REDACT_CONF"
+}
+
+cmd_init() {
+  local repo=${1:-.}
+  if [[ -f $AGE_KEY ]]; then
+    ok "age key already at $AGE_KEY"
+  else
+    need_age
+    mkdir -p "$(dirname "$AGE_KEY")"; chmod 700 "$(dirname "$AGE_KEY")"
+    age-keygen -o "$AGE_KEY" 2>&1 | sed 's/^/     /'
+    chmod 600 "$AGE_KEY"
+    ok "created $AGE_KEY -- back this up; without it the maps cannot be read"
+  fi
+  [[ -f $(map_path "$repo") ]] && { ok "$(map_path "$repo") already exists"; return 0; }
+  printf '' | map_encrypt "$repo"
+  ok "created $(map_path "$repo")"
+}
+
+cmd_show() { map_decrypt "${1:-.}"; }
+
+cmd_edit() {
+  local repo=${1:-.} tmp
+  tmp=$(mk_tmpfile -t redact-map.XXXXXX); chmod 600 "$tmp"
+  { map_decrypt "$repo" 2>/dev/null || true; } > "$tmp"
+  [[ -s $tmp ]] || printf '### EXAMPLE_TOKEN\nreal value here\n' > "$tmp"
+  "${EDITOR:-vis}" "$tmp"
+  map_encrypt "$repo" < "$tmp"
+  ok "map updated ($(grep -c '^### ' "$tmp") entries)"
+}
+
+cmd_set() {
+  local repo=$1 name=$2 val
+  val=$(cat)
+  map_set "$repo" "$name" "$val"
+  ok "set $name"
+}
+
+cmd_mirror() {
+  local src=${1:-$MIRROR_SRC} dst=${2:-$MIRROR_DST} stage
+  need_pair "$src" "$dst"
+  [[ -d $src ]] || die "source $src does not exist"
+  [[ -d $dst ]] || die "destination $dst does not exist"
+  [[ -f $(map_path "$dst") ]] || die "no map at $(map_path "$dst") -- run: redact init $dst"
+
+  stage=$(mk_tmpdir)
+  log "Staging $src"
+  local -a ex=( --exclude=.git/ --exclude="$MAP_NAME"
+                --exclude=secrets/ --exclude='*.age' --exclude='*.key'
+                --exclude='*.pem' --exclude='id_*' )
+  # Anything else the source declares as unpublishable. Redaction cannot make
+  # these safe, so they are never copied in the first place.
+  while read -r g; do
+    [[ -n $g ]] && ex+=( --exclude="$g" )
+  done < <(repo_globs "$src")
+  rsync -a "${ex[@]}" "$src/" "$stage/"
+
+  log "Applying the map"
+  apply_redaction "$dst" "$stage"
+
+  log "Scanning"
+  cp "$(map_path "$dst")" "$stage/$MAP_NAME"
+  scan_files "$stage" tree || die "staged copy still contains secrets -- $dst untouched"
+
+  log "Publishing to $dst"
+  rsync -ac --delete --exclude=.git/ \
+        --filter="P /.gitignore" --filter="P /README.md" --filter="P /LICENSE" \
+        --filter="P /.github/" --filter="P /$MAP_NAME" "$stage/" "$dst/"
+  ok "mirrored. $src was not modified."
+}
+
+cmd_hydrate() {
+  local into="" repo
+  [[ ${1:-} == --into ]] && { into=$2; shift 2; }
+  repo=${1:-.}
+  [[ -f $(map_path "$repo") ]] || die "no map at $(map_path "$repo")"
+
+  if [[ -n $into ]]; then
+    log "Reconstructing $repo into $into"
+    mkdir -p "$into"
+    rsync -a --exclude=.git/ --exclude="$MAP_NAME" "$repo/" "$into/"
+    fill_missing "$repo" "$into"
+    apply_hydration "$repo" "$into"
+    local left; left=$(tokens_in "$into")
+    [[ -n $left ]] && warn "still unresolved: $(printf '%s ' $left)"
+    ok "wrote $into"
+    return 0
+  fi
+
+  local n=0 tmpl out
+  while IFS= read -r tmpl; do
+    out=${tmpl%.tmpl}
+    local d; d=$(mk_tmpdir)
+    cp "$tmpl" "$d/f"
+    fill_missing "$repo" "$d"
+    apply_hydration "$repo" "$d"
+    local left; left=$(tokens_in "$d")
+    [[ -n $left ]] && die "no value for: $(printf '%s ' $left)"
+    cp "$d/f" "$out"; rm -rf "$d"
+    ok "wrote ${out#"$repo"/}"
+    n=$((n + 1))
+  done < <(find "$repo" -name '*.tmpl' -not -path '*/.git/*')
+  [[ $n -eq 0 ]] && warn "no *.tmpl files found in $repo"
+  return 0
+}
+
+cmd_check() {
+  local repo=. mode=tree a
+  for a in "$@"; do
+    case $a in
+      --staged)  mode=staged ;;
+      --history) mode=history ;;
+      *)         repo=$a ;;
+    esac
+  done
+  scan_files "$(cd "$repo" && pwd)" "$mode"
+}
+
+cmd_verify() {
+  local src=${1:-$MIRROR_SRC} dst=${2:-$MIRROR_DST} rt diff_out g
+  need_pair "$src" "$dst"
+  rt=$(mk_tmpdir)
+  log "Round-tripping $dst back to a working tree"
+  cmd_hydrate --into "$rt" "$dst" >/dev/null
+  log "Comparing against $src"
+  local -a dex=( --exclude=.git --exclude="$MAP_NAME"
+                 --exclude=.gitignore --exclude=README.md --exclude=flake.lock )
+  while read -r g; do
+    [[ -n $g ]] && dex+=( --exclude="$g" )
+  done < <(repo_globs "$src")
+  diff_out=$(diff -r -q "${dex[@]}" "$src" "$rt" 2>&1) || true
+  if [[ -z $diff_out ]]; then
+    ok "round-trip is exact: hydrate(mirror(src)) == src"
+    return 0
+  fi
+  printf '%s\n' "$diff_out" >&2
+  die "round-trip differs -- the map does not fully cover this tree"
+}
+
+# Print the header comment block, however long it happens to be.
+usage() { awk 'NR>1 && /^#/ { sub(/^# ?/, ""); print; next } NR>1 { exit }' "$0"; }
+
+SUBCOMMAND="${1:-}"
+case "$SUBCOMMAND" in
+  init)    shift; cmd_init "$@" ;;
+  show)    shift; cmd_show "$@" ;;
+  edit)    shift; cmd_edit "$@" ;;
+  set)     shift; [[ $# -eq 2 ]] || die "usage: redact set <repo> <NAME>  (value on stdin)"; cmd_set "$@" ;;
+  mirror)  shift; cmd_mirror "$@" ;;
+  hydrate) shift; cmd_hydrate "$@" ;;
+  check)   shift; cmd_check "$@" ;;
+  verify)  shift; cmd_verify "$@" ;;
+  -h|--help|"") usage ;;
+  *)       die "unknown command: $1 (try --help)" ;;
+esac

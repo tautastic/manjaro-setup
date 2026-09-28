@@ -1,0 +1,30 @@
+# If removing anything in remove.txt would cascade into one of these,
+# 20-gnome-prune.sh aborts instead of proceeding.
+
+systemd
+glibc
+pacman
+linux-firmware
+gnome-shell
+mutter
+gdm
+gnome-control-center
+gnome-settings-daemon
+gnome-session
+gnome-keyring
+nautilus
+loupe
+showtime
+gnome-disk-utility
+gvfs
+xdg-desktop-portal-gnome
+pipewire
+pipewire-pulse
+wireplumber
+networkmanager
+bluez
+kitty
+librewolf
+zsh
+git
+yay

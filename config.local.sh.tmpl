@@ -1,0 +1,12 @@
+# shellcheck shell=bash disable=SC2034  # consumed by config.sh
+# Hydrated from secrets.age by `redact hydrate`. The result, config.local.sh,
+# is gitignored; this template is what gets committed.
+# Anything set here overrides config.sh.
+
+HOSTNAME_NEW="@@SYS_HOSTNAME@@"
+
+GIT_DEFAULT_IDENTITY="@@GIT_USER_1@@"
+GIT_IDENTITIES=(
+  "@@GIT_USER_1@@|@@GIT_EMAIL_1@@|@@GIT_USER_1@@_id_ed25519|66"
+  "@@GIT_USER_2@@|@@GIT_EMAIL_2@@|@@GIT_USER_2@@_id_ed25519|178"
+)

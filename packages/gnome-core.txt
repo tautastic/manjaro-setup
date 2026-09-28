@@ -1,0 +1,27 @@
+# The GNOME surface that must survive the prune, plus session plumbing.
+
+gnome-shell
+mutter
+gdm
+gnome-control-center
+gnome-settings-daemon
+gnome-session
+gnome-keyring
+gnome-backgrounds
+gnome-menus
+xdg-desktop-portal-gnome
+xdg-desktop-portal-gtk
+gvfs
+gvfs-mtp
+
+### audio: pipewire replacing pulseaudio
+pipewire
+pipewire-pulse
+pipewire-alsa
+lib32-pipewire
+wireplumber
+rtkit
+
+### bluetooth
+bluez
+bluez-utils

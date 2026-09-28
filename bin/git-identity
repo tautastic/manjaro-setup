@@ -1,0 +1,213 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+identity_dir="${XDG_CONFIG_HOME:-$HOME/.config}/git/identities"
+
+die() {
+  printf 'git identity: %s\n' "$*" >&2
+  exit 1
+}
+
+usage() {
+  cat <<'USAGE'
+usage: git identity                        show the identity of this repository
+       git identity <name>                 commit and push this repository as <name>
+       git identity list                   list every configured identity
+       git identity check [<name>...]      ask github.com who a key authenticates as
+       git identity clone <name> <url> [<dir>]
+                                           clone as <name> and keep using it
+
+The shell alias `gid` is short for `git identity`.
+USAGE
+}
+
+identities() {
+  local path
+  for path in "$identity_dir"/*; do
+    [ -e "$path" ] && printf '%s\n' "${path##*/}"
+  done
+}
+
+known() {
+  [ -e "$identity_dir/$1" ]
+}
+
+field() {
+  git config -f "$identity_dir/$1" --get "$2" 2>/dev/null || true
+}
+
+key_of() {
+  local cmd
+  cmd=$(field "$1" core.sshCommand)
+  cmd=${cmd#*-i }
+  printf '%s\n' "${cmd%% *}"
+}
+
+short() {
+  case $1 in
+    "$HOME"/*) printf '~%s\n' "${1#"$HOME"}" ;;
+    *) printf '%s\n' "$1" ;;
+  esac
+}
+
+escape() {
+  local s=$1 out='' i c
+  for (( i = 0; i < ${#s}; i++ )); do
+    c=${s:i:1}
+    case $c in
+      [a-zA-Z0-9_/-]) out+=$c ;;
+      *) out+="\\$c" ;;
+    esac
+  done
+  printf '%s' "$out"
+}
+
+in_repo() {
+  git rev-parse --git-dir >/dev/null 2>&1
+}
+
+repo_identity() {
+  local email name
+  email=$(git config --get user.email 2>/dev/null || true)
+  [ -n "$email" ] || return 0
+  while IFS= read -r name; do
+    if [ "$(field "$name" user.email)" = "$email" ]; then
+      printf '%s\n' "$name"
+      return 0
+    fi
+  done < <(identities)
+}
+
+repo_key() {
+  local cmd
+  cmd=$(git config --get core.sshCommand 2>/dev/null || true)
+  [ -n "$cmd" ] || return 0
+  cmd=${cmd#*-i }
+  printf '%s\n' "${cmd%% *}"
+}
+
+status() {
+  in_repo || die "not inside a git repository"
+
+  local name email key
+  name=$(repo_identity)
+  email=$(git config --get user.email 2>/dev/null || true)
+  key=$(repo_key)
+
+  printf 'identity  %s\n' "${name:-unmanaged}"
+  printf 'email     %s\n' "${email:-none}"
+  printf 'key       %s\n' "$([ -n "$key" ] && short "$key" || printf 'whatever ssh picks')"
+
+  if [ -z "$name" ]; then
+    printf '\nThis repository is not set to a known identity.\n'
+    printf 'Run "git identity list" to see them.\n'
+    return 0
+  fi
+
+  if [ "$key" != "$(key_of "$name")" ]; then
+    printf '\nwarning: commits say %s but pushes use %s\n' "$name" \
+      "$([ -n "$key" ] && short "$key" || printf 'the default ssh key')"
+    printf 'warning: run "git identity %s" to line them up again\n' "$name"
+  fi
+}
+
+drop_local() {
+  git config --local --unset-all "$1" 2>/dev/null || true
+}
+
+use() {
+  local name=$1 path
+  known "$name" || die "unknown identity '$name' (try: git identity list)"
+  in_repo || die "not inside a git repository"
+
+  drop_local user.name
+  drop_local user.email
+  drop_local core.sshCommand
+
+  while IFS= read -r path; do
+    case $path in
+      "$identity_dir"/*)
+        git config --local --unset-all include.path "^$(escape "$path")\$" 2>/dev/null || true
+        ;;
+    esac
+  done < <(git config --local --get-all include.path 2>/dev/null || true)
+
+  git config --local --add include.path "$identity_dir/$name"
+  status
+}
+
+list() {
+  local current='' name mark email nw=0 ew=0
+  in_repo && current=$(repo_identity)
+
+  while IFS= read -r name; do
+    [ "${#name}" -gt "$nw" ] && nw=${#name}
+    email=$(field "$name" user.email)
+    [ "${#email}" -gt "$ew" ] && ew=${#email}
+  done < <(identities)
+
+  while IFS= read -r name; do
+    mark='  '
+    [ "$name" = "$current" ] && mark='* '
+    printf '%s%-*s  %-*s  %s\n' "$mark" "$nw" "$name" "$ew" \
+      "$(field "$name" user.email)" "$(short "$(key_of "$name")")"
+  done < <(identities)
+}
+
+check() {
+  local -a names=()
+  local name out
+
+  if [ "$#" -gt 0 ]; then
+    for name in "$@"; do
+      known "$name" || die "unknown identity '$name'"
+    done
+    names=("$@")
+  else
+    mapfile -t names < <(identities)
+  fi
+
+  for name in "${names[@]}"; do
+    out=$(ssh -i "$(key_of "$name")" -o IdentitiesOnly=yes \
+      -o StrictHostKeyChecking=accept-new -T git@github.com 2>&1 || true)
+    printf '%-18s %s\n' "$name" "${out%%$'\n'*}"
+  done
+}
+
+clone() {
+  local name=$1 url=$2 dir=${3:-}
+  known "$name" || die "unknown identity '$name' (try: git identity list)"
+
+  if [ -z "$dir" ]; then
+    dir=${url##*/}
+    dir=${dir%.git}
+  fi
+
+  GIT_SSH_COMMAND=$(field "$name" core.sshCommand) git clone "$url" "$dir"
+  ( cd "$dir" && use "$name" )
+}
+
+case ${1:-status} in
+  status | -s) status ;;
+  list | -l | --list) list ;;
+  help | -h | --help) usage ;;
+  check)
+    shift
+    check "$@"
+    ;;
+  clone)
+    shift
+    [ "$#" -ge 2 ] || die "usage: git identity clone <name> <url> [<dir>]"
+    clone "$@"
+    ;;
+  use)
+    shift
+    [ "$#" -eq 1 ] || die "usage: git identity use <name>"
+    use "$1"
+    ;;
+  -*) die "unknown option '$1'" ;;
+  *)
+    [ "$#" -eq 1 ] || die "usage: git identity <name>"
+    use "$1"
+    ;;
+esac

@@ -1,0 +1,42 @@
+# Manjaro's own additions on top of GNOME. None of it is wanted here, and the
+# shell configs actively fight the zsh setup in dotfiles/.
+# Missing names are ignored, so over-listing here is safe.
+### welcome screens, notifiers, branded tooling
+manjaro-hello
+manjaro-application-utility
+manjaro-settings-manager
+manjaro-settings-manager-notifier
+manjaro-documentation
+matray
+
+### the graphical package manager -- pacman and yay replace it
+pamac-gtk
+pamac-gtk3
+pamac-cli
+pamac-tray-icon-plasma
+pamac-gnome-integration
+libpamac
+libpamac-full
+
+### Manjaro's shell configs: grml prompt, its own aliases, neofetch on login.
+### dotfiles/zsh replaces all of this.
+manjaro-zsh-config
+manjaro-bash-config
+manjaro-fish-config
+zsh-autosuggestions-manjaro
+bash-completion-manjaro
+
+### Manjaro's GNOME session tweaks: gsettings overrides, dash-to-dock and
+### friends enabled by default, the layout switcher.
+manjaro-gnome-settings
+manjaro-gnome-extension-settings
+manjaro-gnome-assets
+gnome-layout-switcher
+manjaro-browser-settings
+
+### misc extras from the gnome-minimal profile
+manjaro-printer
+timeshift
+timeshift-autosnap-manjaro
+firefox
+gnome-terminal
