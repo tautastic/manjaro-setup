@@ -5,11 +5,33 @@ if ! command -v mhwd >/dev/null; then
   die "mhwd not found -- this module expects Manjaro"
 fi
 
-if mhwd -li | grep -q 'video-nvidia'; then
-  skip "mhwd video-nvidia already installed"
+# Install a named config rather than `mhwd -a pci nonfree 0300`. On a board with
+# an active iGPU there are two class-0300 devices, and auto-select takes the
+# first match -- which is video-hybrid-intel-nvidia-prime, a PRIME setup that
+# makes the iGPU primary. That is wrong whenever the monitor is plugged into the
+# discrete card.
+log "Checking which GPU drives the display"
+dgpu_has_display=false
+for conn in /sys/class/drm/card*-*; do
+  [[ -e $conn/status ]] || continue
+  [[ $(cat "$conn/status") == connected ]] || continue
+  card=${conn%%-*}                    # card0-DP-5 -> card0, not card0-DP
+  drv=$(basename "$(readlink -f "$card/device/driver" 2>/dev/null)" 2>/dev/null || true)
+  ok "display on $(basename "$conn") (driver: ${drv:-unknown})"
+  [[ $drv == nvidia* || $drv == nouveau ]] && dgpu_has_display=true
+done
+
+if [[ $dgpu_has_display == false ]]; then
+  warn "No display is attached to the NVIDIA card."
+  warn "  MHWD_VIDEO_CONFIG is '$MHWD_VIDEO_CONFIG'. If your monitor is on the"
+  warn "  motherboard instead, you probably want video-hybrid-intel-nvidia-prime."
+fi
+
+if mhwd -li | grep -qw "$MHWD_VIDEO_CONFIG"; then
+  skip "mhwd $MHWD_VIDEO_CONFIG already installed"
 else
-  log "Installing the proprietary NVIDIA driver via mhwd"
-  run sudo mhwd -a pci nonfree 0300
+  log "Installing $MHWD_VIDEO_CONFIG via mhwd"
+  run sudo mhwd -i pci "$MHWD_VIDEO_CONFIG"
 fi
 
 # OpenCL, and the 32-bit libraries Steam and Wine need
@@ -18,7 +40,7 @@ pkg_install opencl-nvidia lib32-nvidia-utils
 
 # GNOME on Wayland needs DRM modesetting. fbdev gives a working console.
 log "Adding NVIDIA kernel parameters to GRUB"
-current=$(grep -E '^GRUB_CMDLINE_LINUX_DEFAULT=' /etc/default/grub | sed -E 's/^[^=]+="(.*)"$/\1/')
+current=$(grub_value GRUB_CMDLINE_LINUX_DEFAULT || true)
 wanted="$current"
 for param in nvidia_drm.modeset=1 nvidia_drm.fbdev=1; do
   [[ " $wanted " == *" $param "* ]] || wanted="$wanted $param"
@@ -27,7 +49,7 @@ wanted=$(printf '%s' "$wanted" | tr -s ' ' | sed -E 's/^ | $//g')
 if [[ "$wanted" == "$current" ]]; then
   skip "GRUB_CMDLINE_LINUX_DEFAULT already has the NVIDIA parameters"
 else
-  run sudo sed -i -E "s|^GRUB_CMDLINE_LINUX_DEFAULT=.*|GRUB_CMDLINE_LINUX_DEFAULT=\"$wanted\"|" /etc/default/grub
+  grub_write GRUB_CMDLINE_LINUX_DEFAULT "$wanted"
   # Each module runs in its own subshell, so this cannot be handed to
   # 15-boot-menu through a variable. Regenerate here; that module regenerates
   # again if it has its own changes, and update-grub is idempotent.

@@ -102,6 +102,8 @@ alias -- mj-make='$HOME/.config/manjaro-setup/install.sh'
 
 source "$HOME/.config/zsh/bookmarks.zsh"
 
+[[ -f source /usr/share/nvm/init-nvm.sh ]] && source source /usr/share/nvm/init-nvm.sh
+
 command -v zoxide >/dev/null && eval "$(zoxide init zsh)"
 [[ -f /usr/share/fzf/key-bindings.zsh ]] && source /usr/share/fzf/key-bindings.zsh
 [[ -f /usr/share/fzf/completion.zsh ]] && source /usr/share/fzf/completion.zsh

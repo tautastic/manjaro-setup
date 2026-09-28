@@ -88,7 +88,9 @@ else
 fi
 
 if [[ ${win_found:-false} == true ]] && [[ $DRY_RUN != true ]]; then
-  if grep -qi 'windows' /boot/grub/grub.cfg 2>/dev/null; then
+  # grub.cfg is 0600 root, so this must go through sudo -- a plain grep always
+  # fails for the invoking user and reported a missing entry that was there.
+  if sudo grep -qi 'windows' /boot/grub/grub.cfg 2>/dev/null; then
     ok "grub.cfg contains a Windows entry"
   else
     warn "grub.cfg still has no Windows entry -- inspect 'sudo os-prober' by hand"

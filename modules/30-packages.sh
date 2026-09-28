@@ -9,5 +9,5 @@ aur_install $(read_pkg_list "$ROOT/packages/aur.txt")
 
 if [[ $DRY_RUN != true ]]; then
   log "Rebuilding the font cache"
-  as_user fc-cache -f
+  as_user fc-cache -f || warn "font cache rebuild failed"
 fi

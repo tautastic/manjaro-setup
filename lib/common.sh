@@ -24,8 +24,11 @@ as_user() {
     printf '%s would run (as %s):%s %s\n' "$DIM" "$TARGET_USER" "$RST" "$*"
     return 0
   fi
+  # Returns the command's own exit status, deliberately. Call sites use as_user
+  # to probe (`if as_user ...`) and to fall back (`as_user ... || warn`); a
+  # die() here defeats both, and killed the run on a merely-false probe.
   if [[ $(id -un) == "$TARGET_USER" ]]; then
-    "$@" || die "command failed: $*"
+    "$@"
   else
     sudo -u "$TARGET_USER" -H "$@"
   fi
@@ -62,7 +65,8 @@ aur_install() {
   fi
   command -v yay >/dev/null || die "yay is not installed; run module 00-base first"
   log "yay: installing ${missing[*]}"
-  as_user yay -S --needed --noconfirm "${missing[@]}"
+  as_user yay -S --needed --noconfirm "${missing[@]}" \
+    || die "yay failed for: ${missing[*]}"
 }
 
 svc_enable() {
@@ -146,19 +150,43 @@ regen_grub() {
   fi
 }
 
+# Read KEY's value from /etc/default/grub. Manjaro quotes some values with
+# single quotes and leaves others bare, so strip whichever wrapping is present
+# -- assuming double quotes silently captures the entire line as the value.
+grub_value() {                        # grub_value <key>
+  local key=$1 line
+  line=$(grep -E "^${key}=" /etc/default/grub 2>/dev/null | head -1) || return 1
+  [[ -z $line ]] && return 1
+  line=${line#"${key}="}
+  if [[ ${#line} -ge 2 && ${line:0:1} == '"' && ${line: -1} == '"' ]]; then
+    line=${line:1:${#line}-2}
+  elif [[ ${#line} -ge 2 && ${line:0:1} == "'" && ${line: -1} == "'" ]]; then
+    line=${line:1:${#line}-2}
+  fi
+  printf '%s' "$line"
+}
+
+# Write KEY="value", escaping the sed metacharacters that appear in kernel
+# command lines (& and | and backslash).
+grub_write() {                        # grub_write <key> <value>
+  local key=$1 value=$2 esc
+  esc=$(printf '%s' "$value" | sed -e 's/[&|\\]/\\&/g')
+  if grep -qE "^#?${key}=" /etc/default/grub; then
+    run sudo sed -i -E "s|^#?${key}=.*|${key}=\"${esc}\"|" /etc/default/grub
+  else
+    run sudo sh -c "printf '%s\n' '${key}=\"${value}\"' >> /etc/default/grub"
+  fi
+}
+
 # Set KEY="VALUE" in /etc/default/grub, adding it if absent.
 set_grub_var() {
   local key=$1 value=$2 current
-  current=$(grep -E "^${key}=" /etc/default/grub 2>/dev/null | head -1 | sed -E "s/^${key}=\"?([^\"]*)\"?$/\1/")
+  current=$(grub_value "$key" || true)
   if [[ "$current" == "$value" ]]; then
     skip "/etc/default/grub: $key already $value"
     return 1
   fi
-  if grep -qE "^#?${key}=" /etc/default/grub; then
-    run sudo sed -i -E "s|^#?${key}=.*|${key}=\"${value}\"|" /etc/default/grub
-  else
-    run sudo sh -c "printf '%s\n' '${key}=\"${value}\"' >> /etc/default/grub"
-  fi
+  grub_write "$key" "$value"
   ok "/etc/default/grub: $key=$value"
   return 0
 }

@@ -19,6 +19,27 @@ fi
 
 log "${#present[@]} of ${#wanted_gone[@]} listed packages are installed"
 
+# Anything we intend to keep is marked explicitly installed first. Packages
+# pulled in as dependencies of something being removed would otherwise become
+# orphans and be swept away -- zsh is the obvious casualty, since it arrives as
+# a dependency of manjaro-zsh-config.
+log "Marking the keep set as explicitly installed"
+keep=()
+for f in repo.txt gnome-core.txt protect.txt; do
+  while read -r k; do
+    pkg_installed "$k" && keep+=("$k")
+  done < <(read_pkg_list "$ROOT/packages/$f")
+done
+if [[ ${#keep[@]} -gt 0 ]]; then
+  if [[ $DRY_RUN == true ]]; then
+    printf '%s would run:%s pacman -D --asexplicit (%s packages)\n' "$DIM" "$RST" "${#keep[@]}"
+  else
+    sudo pacman -D --asexplicit "${keep[@]}" >/dev/null 2>&1 \
+      && ok "${#keep[@]} packages marked explicit" \
+      || warn "could not mark the keep set explicit"
+  fi
+fi
+
 is_protected() {
   local candidate=$1 p
   for p in "${protected[@]}"; do
@@ -29,8 +50,18 @@ is_protected() {
 
 # Ask pacman what the full removal set would be, including -s cascade and -n
 # config files. Returns 1 if the set cannot be removed as a whole.
+# `--nosave` and `--print` are mutually exclusive, so `-Rns --print` always
+# errored out and produced nothing -- which made every package look unremovable
+# and silently disabled the whole guard. `-Rs --print` gives the same removal
+# set; --nosave only affects whether config files are backed up on the real run.
+# It reads the local database only, so it needs no root and works in a dry run.
+# Deliberately -R, not -Rs. Recursing into now-unneeded dependencies is far too
+# blunt here: manjaro-zsh-config pulls in zsh, zsh-completions,
+# zsh-syntax-highlighting and powerlevel10k as dependencies, so -Rs proposes
+# removing the login shell along with it. Remove exactly what is listed, and let
+# the guarded orphan sweep below deal with genuine leftovers.
 preview_removal() {
-  sudo pacman -Rns --print --print-format '%n' "$@" 2>/dev/null
+  pacman -R --print --print-format '%n' "$@" 2>/dev/null
 }
 
 check_cascade() {

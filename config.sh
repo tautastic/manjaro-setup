@@ -38,6 +38,11 @@ GIT_IDENTITIES=(
 # this repo is public. Keep it alongside your SSH keys, by hand.
 STOW_PACKAGES=(zsh kitty yazi vis zathura git librewolf fontconfig xdg qt)
 
+# Which mhwd graphics config to install. video-nvidia drives the discrete card
+# directly; use video-hybrid-intel-nvidia-prime only if the monitor is plugged
+# into the motherboard rather than the graphics card.
+MHWD_VIDEO_CONFIG="video-nvidia"
+
 # Leave the firewall off.
 ENABLE_FIREWALL=false
 

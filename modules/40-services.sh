@@ -25,8 +25,10 @@ for f in /etc/subuid /etc/subgid; do
   fi
 done
 
+# as_user returns success without running anything in a dry run, so testing it
+# there would always report "already set up" and hide the real work.
 if [[ -x "$TARGET_HOME/bin/dockerd-rootless.sh" ]] || \
-   as_user systemctl --user is-enabled --quiet docker.service 2>/dev/null; then
+   { [[ $DRY_RUN != true ]] && as_user systemctl --user is-enabled --quiet docker.service 2>/dev/null; }; then
   skip "rootless docker already set up"
 elif [[ $DRY_RUN != true ]]; then
   log "Setting up rootless Docker for $TARGET_USER"

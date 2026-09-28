@@ -66,10 +66,7 @@ amberol
 gcc
 make
 go
-nodejs
-npm
-pnpm
-biome
+nvm
 
 ### fonts
 noto-fonts

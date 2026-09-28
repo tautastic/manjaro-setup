@@ -37,7 +37,6 @@ gnome-remote-desktop
 gnome-software
 orca
 rygel
-tecla
 
 ### explicitly unwanted
 gnome-tour
@@ -71,8 +70,8 @@ swell-foop
 tali
 
 ### printing
+# cups-pk-helper is a hard dependency of gnome-control-center, so it stays.
 cups
-cups-pk-helper
 system-config-printer
 
 ### pulseaudio, replaced by pipewire

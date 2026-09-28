@@ -8,6 +8,9 @@ backup_away() {
   local path=$1
   [[ -e $path ]] || { skip "$path absent"; return 0; }
   [[ -L $path ]] && { skip "$path is a symlink we manage"; return 0; }
+  # Never back up a backup: the autostart glob below matches the .bak files
+  # this function creates, which on a re-run produced .bak.<ts>.bak.<ts>.
+  [[ $path == *.bak.[0-9]* ]] && return 0
   warn "moving $path -> $path.bak.$stamp"
   if [[ -w $(dirname "$path") ]]; then
     run mv "$path" "$path.bak.$stamp"
@@ -77,7 +80,7 @@ for dir in /etc/xdg/autostart "$TARGET_HOME/.config/autostart"; do
   while read -r f; do
     backup_away "$f"
     autostart_found=true
-  done < <(find "$dir" -maxdepth 1 -type f \
+  done < <(find "$dir" -maxdepth 1 -type f -name '*.desktop' \
              \( -iname '*manjaro*' -o -iname '*matray*' -o -iname '*pamac*' \) 2>/dev/null)
 done
 [[ $autostart_found == false ]] && skip "no Manjaro autostart entries found"
