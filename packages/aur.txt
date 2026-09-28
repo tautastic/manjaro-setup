@@ -5,4 +5,4 @@ claude-code
 localsend-bin    # AUR binary build
 resvg-git        # yazi SVG previews; no non-git resvg is packaged
 adwaita-qt6      # the Adwaita-Dark style qt6ct.conf selects
-discord_arch_electron
+jetbrains-toolbox
