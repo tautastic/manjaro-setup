@@ -1,34 +1,43 @@
 #!/usr/bin/env bash
 #
-# Create the same disk layout the NixOS laptop uses (its cfnix repo,
-# hosts/nixos/disk.nix) on a target disk, from a live ISO:
+# Partition a disk for this Manjaro install, from a live ISO:
 #
 #   GPT
-#    p1  2560 MiB  ESP, vfat, label BOOT, partition name disk-main-ESP
-#    p2  rest      LUKS2, partition name disk-main-luks
+#    p1  1 GiB   ESP,  vfat, label EFI,  name disk-main-ESP   -> /boot/efi
+#    p2  2 GiB   boot, ext4, label BOOT, name disk-main-boot  -> /boot
+#    p3  rest    LUKS2,                  name disk-main-luks
 #          └─ cryptroot: btrfs, label ROOT
-#               @      -> /
-#               @home  -> /home
+#               @      -> /       (compress=zstd)
+#               @home  -> /home   (compress=zstd)
 #               @swap  -> /swap   (16 GiB swapfile)
+#
+# /boot and /boot/efi are deliberately outside the LUKS container: GRUB reads the
+# kernel and initramfs from /boot before anything is unlocked, and Calamares
+# expects the ESP at /boot/efi.
 #
 # THIS ERASES THE TARGET DISK. It asks for the LUKS passphrase and for the
 # device path, typed out in full, before it writes anything.
 #
 #   ./scripts/partition-disk.sh --dry-run /dev/sdX
 #   ./scripts/partition-disk.sh /dev/sdX
+#   ./scripts/partition-disk.sh --keep-mounted /dev/sdX   # for a pacstrap install
 
 set -euo pipefail
 
-ESP_SIZE=2560MiB
+ESP_SIZE=1GiB
+BOOT_SIZE=2GiB
 SWAP_SIZE=16G
 ESP_LABEL=disk-main-ESP
+BOOT_LABEL=disk-main-boot
 LUKS_LABEL=disk-main-luks
 MAPPER=cryptroot
+FS_LABEL_EFI=EFI
 FS_LABEL_BOOT=BOOT
 FS_LABEL_ROOT=ROOT
 SUBVOLS=("@:/" "@home:/home" "@swap:/swap")
 
 DRY_RUN=false
+KEEP_MOUNTED=false
 TARGET=/mnt
 
 if [[ -t 1 ]]; then
@@ -55,6 +64,7 @@ DEV=""
 while [[ $# -gt 0 ]]; do
   case $1 in
     --dry-run) DRY_RUN=true; shift ;;
+    --keep-mounted) KEEP_MOUNTED=true; shift ;;
     --target)  TARGET=${2:?--target needs a path}; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     -*)        die "unknown option: $1 (try --help)" ;;
@@ -69,8 +79,9 @@ partdev() {
 }
 P1=$(partdev "$DEV" 1)
 P2=$(partdev "$DEV" 2)
+P3=$(partdev "$DEV" 3)
 
-for c in sfdisk cryptsetup mkfs.btrfs mkfs.fat btrfs lsblk findmnt; do
+for c in sfdisk cryptsetup mkfs.btrfs mkfs.fat mkfs.ext4 btrfs lsblk findmnt; do
   command -v "$c" >/dev/null || die "$c is not installed"
 done
 [[ $DRY_RUN == true || $EUID -eq 0 ]] || die "run this as root from a live ISO"
@@ -119,12 +130,14 @@ ok "no Windows boot manager on $DEV"
 
 size=$(lsblk -bno SIZE --nodeps "$DEV" 2>/dev/null || echo 0)
 printf '\n%sPlan for %s (%s)%s\n' "$YLW" "$DEV" "$( [[ $size -gt 0 ]] && numfmt --to=iec "$size" || echo unknown )" "$RST"
-printf '  %-14s %-10s %s\n' "$P1" "$ESP_SIZE" "ESP, vfat, label $FS_LABEL_BOOT, name $ESP_LABEL"
-printf '  %-14s %-10s %s\n' "$P2" "rest" "LUKS2, name $LUKS_LABEL"
-printf '  %-14s %-10s %s\n' "  $MAPPER" "" "btrfs, label $FS_LABEL_ROOT"
-for s in "${SUBVOLS[@]}"; do printf '  %-14s %-10s %s\n' "    ${s%%:*}" "" "-> ${s##*:}"; done
-printf '  %-14s %-10s %s\n' "    swapfile" "$SWAP_SIZE" "in @swap"
+printf '  %-14s %-9s %s\n' "$P1" "$ESP_SIZE" "ESP, vfat, label $FS_LABEL_EFI, name $ESP_LABEL -> /boot/efi"
+printf '  %-14s %-9s %s\n' "$P2" "$BOOT_SIZE" "ext4, label $FS_LABEL_BOOT, name $BOOT_LABEL -> /boot"
+printf '  %-14s %-9s %s\n' "$P3" "rest" "LUKS2, name $LUKS_LABEL"
+printf '  %-14s %-9s %s\n' "  $MAPPER" "" "btrfs, label $FS_LABEL_ROOT"
+for s in "${SUBVOLS[@]}"; do printf '  %-14s %-9s %s\n' "    ${s%%:*}" "" "-> ${s##*:}"; done
+printf '  %-14s %-9s %s\n' "    swapfile" "$SWAP_SIZE" "in @swap"
 printf '%sEverything on %s will be destroyed.%s\n\n' "$RED" "$DEV" "$RST"
+
 
 if [[ $DRY_RUN != true ]]; then
   printf 'Type the device path to confirm: '
@@ -150,23 +163,25 @@ if [[ $DRY_RUN == true ]]; then
 else
   sfdisk --wipe always --wipe-partitions always --label gpt "$DEV" <<LAYOUT
 start=1MiB, size=$ESP_SIZE, type=uefi, name="$ESP_LABEL"
+size=$BOOT_SIZE, type=linux, name="$BOOT_LABEL"
 type=linux, name="$LUKS_LABEL"
 LAYOUT
   udevadm settle 2>/dev/null || true
 fi
 ok "partition table written"
 
-log "Creating the ESP"
-run mkfs.fat -F32 -n "$FS_LABEL_BOOT" "$P1"
+log "Creating the ESP and /boot"
+run mkfs.fat -F32 -n "$FS_LABEL_EFI" "$P1"
+run mkfs.ext4 -F -L "$FS_LABEL_BOOT" "$P2"
 
 log "Creating the LUKS2 container"
 if [[ $DRY_RUN == true ]]; then
-  printf '%s would run:%s cryptsetup luksFormat --type luks2 %s\n' "$DIM" "$RST" "$P2"
-  printf '%s would run:%s cryptsetup open %s %s\n' "$DIM" "$RST" "$P2" "$MAPPER"
+  printf '%s would run:%s cryptsetup luksFormat --type luks2 %s\n' "$DIM" "$RST" "$P3"
+  printf '%s would run:%s cryptsetup open %s %s\n' "$DIM" "$RST" "$P3" "$MAPPER"
 else
-  printf '%s' "$pass" | cryptsetup luksFormat --type luks2 --batch-mode --key-file - "$P2" \
+  printf '%s' "$pass" | cryptsetup luksFormat --type luks2 --batch-mode --key-file - "$P3" \
     || die "luksFormat failed"
-  printf '%s' "$pass" | cryptsetup open --key-file - "$P2" "$MAPPER" \
+  printf '%s' "$pass" | cryptsetup open --key-file - "$P3" "$MAPPER" \
     || die "could not open the new container"
 fi
 unset pass
@@ -191,7 +206,9 @@ run mount -o "subvol=@,compress=zstd" "/dev/mapper/$MAPPER" "$TARGET"
 run mkdir -p "$TARGET/home" "$TARGET/swap" "$TARGET/boot"
 run mount -o "subvol=@home,compress=zstd" "/dev/mapper/$MAPPER" "$TARGET/home"
 run mount -o "subvol=@swap,noatime"       "/dev/mapper/$MAPPER" "$TARGET/swap"
-run mount -o "fmask=0077,dmask=0077"      "$P1" "$TARGET/boot"
+run mount "$P2" "$TARGET/boot"
+run mkdir -p "$TARGET/boot/efi"
+run mount -o "fmask=0077,dmask=0077" "$P1" "$TARGET/boot/efi"
 
 log "Creating the $SWAP_SIZE swapfile"
 if [[ $DRY_RUN == true ]]; then
@@ -204,6 +221,13 @@ else
 fi
 ok "swapfile ready"
 
+if [[ $DRY_RUN != true && $KEEP_MOUNTED != true ]]; then
+  log "Unmounting, so the installer can mount the layout itself"
+  swapoff "$TARGET/swap/swapfile" 2>/dev/null || true
+  umount -R "$TARGET" || warn "could not unmount $TARGET cleanly"
+  ok "layout left in place; LUKS still open at /dev/mapper/$MAPPER"
+fi
+
 if [[ $DRY_RUN != true ]]; then
   log "Layout"
   lsblk -o NAME,PARTLABEL,FSTYPE,LABEL,SIZE,MOUNTPOINT "$DEV"
@@ -212,19 +236,39 @@ fi
 cat <<NEXT
 
 Next
-  The layout is mounted at $TARGET. Install onto it, then make sure the
-  installer's fstab matches:
+  The layout is on the disk and the LUKS container is open as
+  /dev/mapper/$MAPPER. Nothing is mounted, so the installer can mount it itself.
+  (Pass --keep-mounted if you want it left mounted at $TARGET for a pacstrap
+  install instead.)
 
-    /dev/mapper/$MAPPER  /       btrfs  subvol=@,compress=zstd      0 0
-    /dev/mapper/$MAPPER  /home   btrfs  subvol=@home,compress=zstd  0 0
-    /dev/mapper/$MAPPER  /swap   btrfs  subvol=@swap,noatime,nofail 0 0
-    /dev/disk/by-partlabel/$ESP_LABEL  /boot  vfat  fmask=0077,dmask=0077 0 2
+  In Calamares choose manual partitioning and assign these mountpoints, with
+  "keep"/no reformat on every one:
+
+    $P1  ->  /boot/efi   (vfat)
+    $P2  ->  /boot       (ext4)
+    $P3  ->  /           (luks -> btrfs, subvolume @)
+
+  Calamares only offers /boot/efi for a partition flagged esp, which $P1 is.
+
+  The installed fstab should end up as:
+
+    /dev/mapper/$MAPPER  /          btrfs  subvol=@,compress=zstd      0 0
+    /dev/mapper/$MAPPER  /home      btrfs  subvol=@home,compress=zstd  0 0
+    /dev/mapper/$MAPPER  /swap      btrfs  subvol=@swap,noatime,nofail 0 0
+    /dev/disk/by-partlabel/$BOOT_LABEL  /boot      ext4  defaults              0 2
+    /dev/disk/by-partlabel/$ESP_LABEL   /boot/efi  vfat  fmask=0077,dmask=0077 0 2
     /swap/swapfile  none  swap  defaults  0 0
 
-  and that /etc/crypttab opens $LUKS_LABEL as $MAPPER:
+  and /etc/crypttab should open $LUKS_LABEL as $MAPPER:
 
     $MAPPER  /dev/disk/by-partlabel/$LUKS_LABEL  none  luks
 
-  In Calamares, choose manual partitioning and assign the mountpoints above
-  without reformatting. Then run ./install.sh from the installed system.
+  If Calamares will not let you pick the btrfs subvolumes, let it install and
+  then fix /etc/fstab to the above and run: sudo mkinitcpio -P && sudo update-grub
+
+  Check afterwards that /etc/default/grub has
+    cryptdevice=/dev/disk/by-partlabel/$LUKS_LABEL:$MAPPER root=/dev/mapper/$MAPPER
+  and that /etc/mkinitcpio.conf HOOKS contains "encrypt" before "filesystems".
+
+  Then run ./install.sh from the installed system, as the user the config expects.
 NEXT

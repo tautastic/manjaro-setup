@@ -301,7 +301,7 @@ scan_files() {
     val=$(printf '%s' "$b64" | base64 -d)
     while IFS= read -r line; do
       [[ ${#line} -lt 3 ]] && continue
-      runscan F "$line" "unredacted value of @@${name}@@"
+      runscan P "(?<![A-Za-z0-9])\\Q${line}\\E(?![A-Za-z0-9])" "unredacted value of @@${name}@@"
     done <<< "$val"
   done < <(map_pairs "$repo" 2>/dev/null || true)
 
@@ -399,7 +399,7 @@ cmd_hydrate() {
     n=$((n + 1))
   done < <(redacted_paths "$repo")
 
-  [[ $n -gt 0 ]] && drop_eval_cache
+  [[ $n -gt 0 && -f $repo/flake.nix ]] && drop_eval_cache
   [[ $n -eq 0 ]] && skip "nothing left to hydrate"
   return 0
 }

@@ -215,3 +215,11 @@ assert_hydrated() {
 $(printf '%s\n' "$left" | sed 's/^/       /')
      Fill them in from secrets.age:  ./bin/redact hydrate"
 }
+
+assert_user() {
+  [[ -n ${EXPECTED_USER:-} ]] || return 0
+  [[ $TARGET_USER == "$EXPECTED_USER" ]] && return 0
+  die "this setup expects to run as '$EXPECTED_USER', but you are '$TARGET_USER'.
+     Create that account and run install.sh as them, or change EXPECTED_USER in
+     config.local.sh (and SYS_USER in secrets.age) to match."
+}

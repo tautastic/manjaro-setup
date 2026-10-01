@@ -192,16 +192,16 @@ Or set `RTC_LOCAL_TIME=true` in `config.sh` to make Linux match Windows instead.
 
 ## The disk layout
 
-`scripts/partition-disk.sh` builds the same layout the NixOS laptop uses, so both
-machines are partitioned identically:
+`scripts/partition-disk.sh` partitions the target disk:
 
 ```
 GPT
- p1  2560 MiB  ESP, vfat, label BOOT, partition name disk-main-ESP
- p2  rest      LUKS2, partition name disk-main-luks
+ p1  1 GiB   ESP,  vfat, label EFI,  name disk-main-ESP   -> /boot/efi
+ p2  2 GiB   boot, ext4, label BOOT, name disk-main-boot  -> /boot
+ p3  rest    LUKS2,                  name disk-main-luks
        cryptroot: btrfs, label ROOT
-         @      -> /
-         @home  -> /home
+         @      -> /       (compress=zstd)
+         @home  -> /home   (compress=zstd)
          @swap  -> /swap   (16 GiB swapfile)
 ```
 
@@ -215,20 +215,53 @@ Run it from a Manjaro live ISO, as root, against the target disk:
 It erases the disk, so it asks for the LUKS passphrase and then for the device
 path typed out in full before writing anything. It refuses outright if the disk
 carries the running root filesystem, if anything on it is mounted, or if it
-finds a Windows boot manager on it -- Windows lives on the other drive.
+finds a Windows boot manager on it — Windows lives on the other drive.
 
-Afterwards the layout is mounted at `/mnt` and the script prints the `fstab` and
-`crypttab` lines the installer needs. In Calamares, pick manual partitioning and
-assign those mountpoints without reformatting.
+Afterwards the layout is on the disk, the LUKS container is left open, and
+nothing is mounted — Calamares mounts the target itself and objects if it is
+already busy. Pass `--keep-mounted` to leave it mounted at `/mnt` for a
+pacstrap-style install instead. Either way the script prints the `fstab`,
+`crypttab`, GRUB and `mkinitcpio` lines the installer needs. In Calamares, pick
+manual partitioning and assign the three mountpoints without reformatting.
+
+### Why /boot and /boot/efi sit outside the LUKS container
+
+This is where the layout deliberately diverges from the NixOS laptop, which puts
+a single large ESP at `/boot` and nothing else outside the encryption.
+
+The two machines boot differently. NixOS uses systemd-boot, which loads the
+kernel and initrd straight off the ESP; the initrd then unlocks LUKS. Manjaro
+uses GRUB, which has to read the kernel and initramfs *before* anything is
+unlocked, so they live on an unencrypted `/boot`. And Calamares will only offer
+`/boot/efi` as a mountpoint for the ESP, so the ESP cannot double as `/boot`
+here.
+
+That costs one extra partition and leaves kernels and initramfs readable to
+anyone with the disk. Everything in `/` and `/home` stays encrypted — which is
+the same exposure any GRUB-plus-LUKS install has.
+
+### Compression and swap
 
 `@` and `@home` are mounted `compress=zstd`, matching the NixOS side. `@swap`
-is not compressed: a `NOCOW` swapfile is never compressed anyway. Note that
-btrfs compresses at write time, so on an existing filesystem the option only
-affects newly written data.
+is not compressed: a `NOCOW` swapfile is never compressed anyway. btrfs
+compresses at write time, so on an existing filesystem the option only affects
+newly written data.
 
 The swapfile is 16 GiB, created with `btrfs filesystem mkswapfile`, which marks
 it `NOCOW` as btrfs requires. It lives in its own `@swap` subvolume so that
 snapshotting `@` stays possible later.
+
+## The user and the hostname
+
+The hostname is set by `05-locale` from `HOSTNAME_NEW` in `config.local.sh`, and
+the account this repo configures is `EXPECTED_USER` from the same file. Both are
+private values, so the committed form is tokenised (`@@SYS_HOSTNAME@@`,
+`@@SYS_USER@@`) and `redact hydrate` fills them in.
+
+Create that account in Calamares. Every module checks that the account running it
+is the one the config expects, and stops with a message naming both if it is not,
+so an install done under a different account fails immediately instead of
+half-configuring the wrong home directory.
 
 ## Things the script cannot do for you
 

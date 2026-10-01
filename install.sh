@@ -59,6 +59,7 @@ done
 source "$ROOT/config.sh"
 [[ -n ${TARGET_HOME:-} && -d $TARGET_HOME ]] || die "could not resolve the home directory of $TARGET_USER"
 assert_hydrated
+assert_user
 
 selected() {
   local name=$1 s
