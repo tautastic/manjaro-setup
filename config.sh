@@ -21,6 +21,8 @@ XKB_OPTIONS="grp:win_space_toggle"
 
 STOW_PACKAGES=(zsh kitty yazi vis zathura librewolf fontconfig xdg qt)
 
+SWAP_SIZE=16G
+
 MHWD_VIDEO_CONFIG="video-nvidia"
 
 ENABLE_FIREWALL=false

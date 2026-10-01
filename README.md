@@ -12,6 +12,14 @@ private values is committed **tokenised** and hydrated in place on the machine.
 
 ## From a clean install
 
+Order of operations, starting from a Manjaro live ISO:
+
+1. `scripts/partition-disk.sh` — lay down the partition table (see **The disk
+   layout** below).
+2. Calamares — installs Manjaro onto it, creating the LUKS container and btrfs.
+3. Everything below — run from the installed system, as the user the config
+   expects.
+
 ```sh
 git clone <this repo> ~/.config/manjaro-setup
 cd ~/.config/manjaro-setup
@@ -71,6 +79,7 @@ upgrades the system unless you pass `--upgrade`.
 | `05-locale` | `Europe/Berlin`, `en_US.UTF-8` with nine `de_DE.UTF-8` `LC_*` categories, `KEYMAP=us`, X keyboard, hostname. |
 | `10-nvidia` | `mhwd -a pci nonfree 0300`, `opencl-nvidia`, `lib32-nvidia-utils`, `nvidia_drm.modeset=1`, early KMS, the suspend/resume services. |
 | `15-boot-menu` | Makes GRUB chainload the Windows install on the other drive. |
+| `18-swapfile` | Creates the `@swap` subvolume and the swapfile Calamares does not make. |
 | `22-manjaro-cleanup` | The files removed packages leave behind: shell rc files, system dconf defaults, gsettings overrides, autostart entries. Prunes its own old backups. |
 | `25-gnome-core` | Enables GDM, bluetooth and the pipewire user units; turns cups off; re-enables Wayland if something disabled it. |
 | `35-local-bin` | Symlinks `bin/` into `~/.local/bin` and removes links whose target is gone. |
@@ -192,37 +201,64 @@ Or set `RTC_LOCAL_TIME=true` in `config.sh` to make Linux match Windows instead.
 
 ## The disk layout
 
-`scripts/partition-disk.sh` partitions the target disk:
+`scripts/partition-disk.sh` lays down the partition table and the two
+unencrypted filesystems. Calamares does the encrypted part.
 
 ```
 GPT
  p1  1 GiB   ESP,  vfat, label EFI,  name disk-main-ESP   -> /boot/efi
  p2  2 GiB   boot, ext4, label BOOT, name disk-main-boot  -> /boot
- p3  rest    LUKS2,                  name disk-main-luks
-       cryptroot: btrfs, label ROOT
-         @      -> /       (compress=zstd)
-         @home  -> /home   (compress=zstd)
-         @swap  -> /swap   (16 GiB swapfile)
+ p3  rest    left empty,             name disk-main-luks  -> / (LUKS + btrfs)
 ```
-
-Run it from a Manjaro live ISO, as root, against the target disk:
 
 ```sh
-./scripts/partition-disk.sh --dry-run /dev/sdX   # read this first
-./scripts/partition-disk.sh /dev/sdX
+./scripts/partition-disk.sh --dry-run /dev/nvme0n1   # read this first
+./scripts/partition-disk.sh /dev/nvme0n1
 ```
 
-It erases the disk, so it asks for the LUKS passphrase and then for the device
-path typed out in full before writing anything. It refuses outright if the disk
-carries the running root filesystem, if anything on it is mounted, or if it
-finds a Windows boot manager on it — Windows lives on the other drive.
+It erases the disk, so it asks for the device path typed out in full before
+writing anything. It refuses outright if the disk carries the running root
+filesystem, if anything on it is mounted, or if it finds a Windows boot manager
+on it — Windows lives on the other drive.
 
-Afterwards the layout is on the disk, the LUKS container is left open, and
-nothing is mounted — Calamares mounts the target itself and objects if it is
-already busy. Pass `--keep-mounted` to leave it mounted at `/mnt` for a
-pacstrap-style install instead. Either way the script prints the `fstab`,
-`crypttab`, GRUB and `mkinitcpio` lines the installer needs. In Calamares, pick
-manual partitioning and assign the three mountpoints without reformatting.
+Then in Calamares, manual partitioning:
+
+| partition | mountpoint | what to tell Calamares |
+|---|---|---|
+| p1 | `/boot/efi` | keep, do not format |
+| p2 | `/boot` | keep, do not format |
+| p3 | `/` | **format as btrfs, tick encrypt** |
+
+### Why p3 is left empty
+
+An earlier version of this script created the LUKS container, the btrfs
+filesystem and the `@`/`@home`/`@swap` subvolumes itself, and told Calamares to
+keep everything. That cannot work. Calamares' `mount` module does:
+
+```python
+subprocess.check_call(["btrfs", "subvolume", "create", root_mount_point + s["subvolume"]])
+```
+
+unconditionally, with no existence check — so a pre-made `@` makes
+`btrfs subvolume create` exit 1, which surfaces as the thoroughly unhelpful
+`Bad main script file` from `/usr/lib/calamares/modules/mount/main.py`. A
+pre-existing LUKS container causes a second failure before that one: Calamares
+assigns it a mapper name but never opens it, then tries to mount
+`/dev/mapper/cryptroot`, which does not exist.
+
+Its defaults happen to be exactly what we want anyway:
+
+```python
+btrfs_subvolumes = [dict(mountPoint="/", subvolume="/@"), dict(mountPoint="/home", subvolume="/@home")]
+```
+
+so Calamares creates `@` and `@home`. It only adds `@swap` when it is doing the
+partitioning itself, so `modules/18-swapfile` creates that subvolume and the
+16 GiB swapfile after the install.
+
+The partition table, the partition names and the two unencrypted filesystems are
+still worth scripting: Calamares' manual partitioner makes exact sizes and GPT
+names tedious, and those are what the rest of this repo keys off.
 
 ### Why /boot and /boot/efi sit outside the LUKS container
 
@@ -237,19 +273,19 @@ unlocked, so they live on an unencrypted `/boot`. And Calamares will only offer
 here.
 
 That costs one extra partition and leaves kernels and initramfs readable to
-anyone with the disk. Everything in `/` and `/home` stays encrypted — which is
-the same exposure any GRUB-plus-LUKS install has.
+anyone with the disk. Everything in `/` and `/home` stays encrypted — the same
+exposure any GRUB-plus-LUKS install has.
 
 ### Compression and swap
 
-`@` and `@home` are mounted `compress=zstd`, matching the NixOS side. `@swap`
-is not compressed: a `NOCOW` swapfile is never compressed anyway. btrfs
-compresses at write time, so on an existing filesystem the option only affects
-newly written data.
+Calamares mounts `/` and `/home` with `compress=zstd:1`. The NixOS side uses
+plain `compress=zstd` (level 3); both compress, and the level is a mount option
+you can change in `/etc/fstab` afterwards.
 
-The swapfile is 16 GiB, created with `btrfs filesystem mkswapfile`, which marks
-it `NOCOW` as btrfs requires. It lives in its own `@swap` subvolume so that
-snapshotting `@` stays possible later.
+`modules/18-swapfile` creates the `@swap` subvolume and a 16 GiB swapfile with
+`btrfs filesystem mkswapfile`, which marks it `NOCOW` as btrfs requires. It is
+not compressed — a `NOCOW` file never is. The dedicated subvolume keeps
+snapshotting `@` possible later. Size comes from `SWAP_SIZE` in `config.sh`.
 
 ## The user and the hostname
 
