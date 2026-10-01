@@ -13,6 +13,7 @@ ntfs-3g
 dmidecode
 dmraid
 efibootmgr
+os-prober
 usbutils
 
 # network
@@ -68,6 +69,11 @@ gcc
 make
 go
 nvm
+docker
+docker-compose
+docker-buildx
+fuse-overlayfs
+slirp4netns
 
 # fonts
 noto-fonts

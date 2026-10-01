@@ -3,9 +3,15 @@
 _keep_patterns() { read_pkg_list "$ROOT/packages/keep.txt"; }
 
 _auto_protected() {
-  local g
-  for g in base base-devel; do
-    pacman -Qqg "$g" 2>/dev/null || true
+  local meta
+  for meta in base base-devel; do
+    pacman -Qq "$meta" &>/dev/null || continue
+    printf '%s\n' "$meta"
+    LC_ALL=C pacman -Qi "$meta" 2>/dev/null \
+      | sed -n 's/^Depends On *: *//p' \
+      | tr -s ' ' '\n' \
+      | sed -E 's/[<>=].*//' \
+      | grep -vx 'None' || true
   done
 }
 
@@ -16,7 +22,7 @@ is_protected() {
     # shellcheck disable=SC2053
     [[ $name == $pat ]] && return 0
   done < <(_keep_patterns)
-  _auto_protected | grep -qxF "$name"
+  grep -qxF "$name" <<< "$(_auto_protected)"
 }
 
 want_repo() { read_pkg_list "$ROOT/packages/want.txt" | sort -u; }
@@ -26,7 +32,7 @@ want_all()  { { want_repo; want_aur; } | sort -u; }
 explicit_now() { pacman -Qqe 2>/dev/null | sort -u; }
 
 install_missing() {
-  local missing repo=() aur=() p
+  local missing repo=() aur=() promote=() p
   missing=$(comm -23 <(want_all) <(explicit_now))
   if [[ -z $missing ]]; then
     skip "every wanted package is already installed"
@@ -34,26 +40,28 @@ install_missing() {
   fi
   while IFS= read -r p; do
     [[ -z $p ]] && continue
-    if want_aur | grep -qxF "$p"; then aur+=("$p"); else repo+=("$p"); fi
+    if pkg_installed "$p"; then promote+=("$p")
+    elif want_aur | grep -qxF "$p"; then aur+=("$p")
+    else repo+=("$p"); fi
   done <<< "$missing"
+  if [[ ${#promote[@]} -gt 0 ]]; then
+    log "marking ${#promote[@]} wanted package(s) explicit; they were only installed as dependencies:"
+    printf '       %s\n' "${promote[@]}"
+    run sudo pacman -D --asexplicit "${promote[@]}"
+  fi
   [[ ${#repo[@]} -gt 0 ]] && pkg_install "${repo[@]}"
   [[ ${#aur[@]} -gt 0 ]] && aur_install "${aur[@]}"
   return 0
 }
 
-report_extraneous() {
-  local extra
-  extra=$(comm -13 <(want_all) <(explicit_now))
-  [[ -z $extra ]] && { skip "nothing installed that the manifest does not list"; return 0; }
-  printf '%s\n' "$extra"
-}
+report_extraneous() { comm -13 <(want_all) <(explicit_now); }
 
 prune_extraneous() {
-  [[ -n $(_auto_protected) ]] \
-    || die "pacman -Qqg base returned nothing, so the automatic protection of essential packages is not working -- refusing to prune"
-  local extra demote=() protected=() p removal
+  grep -qxF base <<< "$(_auto_protected)" \
+    || die "could not read the dependencies of the base package, so the automatic protection of essential packages is not working -- refusing to prune"
+  local extra demote=() protected=() p
   extra=$(report_extraneous)
-  [[ -z $extra ]] && return 0
+  [[ -z $extra ]] && { skip "nothing installed that the manifest does not list"; return 0; }
 
   while IFS= read -r p; do
     [[ -z $p ]] && continue
@@ -78,10 +86,10 @@ sweep_orphans() {
   local round=0 orphans hits p removal
   while (( round < 5 )); do
     round=$((round + 1))
-    mapfile -t orphans < <(pacman -Qdtq 2>/dev/null || true)
+    mapfile -t orphans < <(pacman -Qdttq 2>/dev/null || true)
     [[ ${#orphans[@]} -eq 0 ]] && { skip "no orphans left"; return 0; }
 
-    removal=$(pacman -Rns --print --print-format '%n' "${orphans[@]}" 2>/dev/null || true)
+    removal=$(pacman -Rs --print --print-format '%n' "${orphans[@]}" 2>/dev/null || true)
     if [[ -z $removal ]]; then
       warn "pacman would not remove ${orphans[*]}; stopping the sweep"
       return 0

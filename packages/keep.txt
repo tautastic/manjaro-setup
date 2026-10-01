@@ -1,4 +1,4 @@
-# essential userland, also covered by the base group
+# essential userland, also covered by the base package's dependencies
 systemd
 glibc
 pacman
@@ -14,6 +14,8 @@ grub
 efibootmgr
 mkinitcpio
 mkinitcpio-*
+plymouth
+plymouth-*
 linux[0-9]*
 linux-firmware
 linux-firmware-*

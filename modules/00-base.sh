@@ -39,6 +39,8 @@ else
     warn "installed explicitly but not in the manifest ($(printf '%s\n' "$extra" | grep -c .)):"
     printf '%s\n' "$extra" | sed 's/^/       /' >&2
     warn "add them to packages/want.txt, or remove them with ./install.sh --prune"
+  else
+    skip "nothing installed that the manifest does not list"
   fi
 fi
 

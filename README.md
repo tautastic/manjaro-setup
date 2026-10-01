@@ -98,17 +98,23 @@ not listed — pacman tracks those.
 
 `00-base` reconciles it:
 
-1. Anything wanted but missing gets installed.
+1. Anything wanted but missing gets installed. Anything wanted that is only
+   installed as a dependency is marked explicit (`pacman -D --asexplicit`),
+   otherwise it would be swept as soon as whatever pulled it in is removed.
 2. Anything installed **explicitly** that the manifest does not list is
    reported. With `--prune` it is marked as a dependency (`pacman -D --asdeps`)
    rather than removed outright, and then the orphan sweep decides what actually
    goes — so nothing still needed is taken out.
-3. The sweep previews with the *same* flags it removes with (`pacman -Rns
-   --print`), and aborts if anything matching `packages/keep.txt` shows up in
-   that set. It asks before removing, unless `--yes`.
+3. The sweep previews what pacman would remove (`pacman -Rs --print`; pacman
+   refuses `-n` together with `--print`), and aborts if anything matching
+   `packages/keep.txt` shows up in that set. It asks before removing, unless
+   `--yes`. Packages that are only *optional* dependencies of something else
+   count as orphans too (`pacman -Qdtt`), which is how `malcontent`, the
+   parental-controls app that `gnome-control-center` merely suggests, goes.
 
-`keep.txt` entries are globs, and the `base` and `base-devel` groups are
-protected automatically — so versioned kernels (`linux[0-9]*`), the graphics
+`keep.txt` entries are globs, and the `base` and `base-devel` meta-packages
+(these are packages, not groups, on current Arch and Manjaro) and their direct
+dependencies are protected automatically — so versioned kernels (`linux[0-9]*`), the graphics
 driver `mhwd` installed (`nvidia-*`), and Manjaro's own tooling cannot be pruned
 even though this repo never asks for them by name.
 
