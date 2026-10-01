@@ -1,6 +1,10 @@
-# Shared helpers. Sourced by install.sh and every module.
+# shellcheck shell=bash
 
-RED=$'\033[31m'; GRN=$'\033[32m'; YLW=$'\033[33m'; BLU=$'\033[34m'; DIM=$'\033[2m'; RST=$'\033[0m'
+if [[ -t 1 ]]; then
+  RED=$'\033[31m'; GRN=$'\033[32m'; YLW=$'\033[33m'; BLU=$'\033[34m'; DIM=$'\033[2m'; RST=$'\033[0m'
+else
+  RED=""; GRN=""; YLW=""; BLU=""; DIM=""; RST=""
+fi
 
 log()  { printf '%s==>%s %s\n' "$BLU" "$RST" "$*"; }
 ok()   { printf '%s  ok%s %s\n' "$GRN" "$RST" "$*"; }
@@ -9,6 +13,7 @@ die()  { printf '%sfail%s %s\n' "$RED" "$RST" "$*" >&2; exit 1; }
 skip() { printf '%s skip%s %s\n' "$DIM" "$RST" "$*"; }
 
 DRY_RUN="${DRY_RUN:-false}"
+PRUNE="${PRUNE:-false}"
 
 run() {
   if [[ $DRY_RUN == true ]]; then
@@ -18,15 +23,11 @@ run() {
   fi
 }
 
-# Run a command as the target user, with their session bus available.
 as_user() {
   if [[ $DRY_RUN == true ]]; then
     printf '%s would run (as %s):%s %s\n' "$DIM" "$TARGET_USER" "$RST" "$*"
     return 0
   fi
-  # Returns the command's own exit status, deliberately. Call sites use as_user
-  # to probe (`if as_user ...`) and to fall back (`as_user ... || warn`); a
-  # die() here defeats both, and killed the run on a merely-false probe.
   if [[ $(id -un) == "$TARGET_USER" ]]; then
     "$@"
   else
@@ -34,13 +35,16 @@ as_user() {
   fi
 }
 
-need_root() {
-  [[ $EUID -eq 0 ]] || die "this step needs root; re-run install.sh with sudo"
+confirm() {
+  [[ ${ASSUME_YES:-false} == true ]] && return 0
+  local reply
+  printf '%s%s [y/N] %s' "$YLW" "$1" "$RST" >&2
+  { IFS= read -r reply </dev/tty; } 2>/dev/null || return 1
+  [[ $reply == [yY]* ]]
 }
 
 pkg_installed() { pacman -Qq "$1" &>/dev/null; }
 
-# Install only what is missing, so re-runs are no-ops.
 pkg_install() {
   local missing=() p
   for p in "$@"; do
@@ -69,10 +73,16 @@ aur_install() {
     || die "yay failed for: ${missing[*]}"
 }
 
+unit_exists() {
+  [[ -n $(systemctl list-unit-files --no-legend "$1" 2>/dev/null) ]]
+}
+
 svc_enable() {
   local unit
   for unit in "$@"; do
-    if systemctl is-enabled --quiet "$unit" 2>/dev/null; then
+    if ! unit_exists "$unit"; then
+      warn "$unit does not exist; not enabling it"
+    elif systemctl is-enabled --quiet "$unit" 2>/dev/null; then
       skip "$unit already enabled"
     else
       run sudo systemctl enable "$unit"
@@ -83,7 +93,9 @@ svc_enable() {
 svc_disable() {
   local unit
   for unit in "$@"; do
-    if systemctl list-unit-files "$unit" &>/dev/null && systemctl is-enabled --quiet "$unit" 2>/dev/null; then
+    if ! unit_exists "$unit"; then
+      skip "$unit does not exist"
+    elif systemctl is-enabled --quiet "$unit" 2>/dev/null; then
       run sudo systemctl disable --now "$unit"
     else
       skip "$unit not enabled"
@@ -91,7 +103,6 @@ svc_disable() {
   done
 }
 
-# Write a file only when its contents would change, and report which.
 write_file() {
   local path=$1 mode=${2:-644} content
   content=$(cat)
@@ -109,11 +120,17 @@ write_file() {
   ok "wrote $path"
 }
 
-# Same, but owned by the target user (no sudo).
 write_user_file() {
   local path=$1 mode=${2:-644} content
   content=$(cat)
-  if [[ -f $path ]] && [[ "$(cat "$path")" == "$content" ]]; then
+  if [[ -L $path ]]; then
+    if [[ $DRY_RUN == true ]]; then
+      printf '%s would replace symlink:%s %s\n' "$DIM" "$RST" "$path"
+    else
+      rm -f "$path"
+      warn "replaced a symlink at $path with a generated file"
+    fi
+  elif [[ -f $path ]] && [[ "$(cat "$path")" == "$content" ]]; then
     skip "$path unchanged"
     return 0
   fi
@@ -127,20 +144,20 @@ write_user_file() {
   ok "wrote $path"
 }
 
-# Ensure `line` is present in `file` (matched by `key`), adding or replacing it.
-ensure_line() {
-  local file=$1 key=$2 line=$3
-  [[ -f $file ]] || die "$file does not exist"
-  if grep -qE "$key" "$file"; then
-    grep -qxF "$line" "$file" && { skip "$file already has: $line"; return 0; }
-    run sudo sed -i -E "s|$key|$line|" "$file"
-  else
-    run sudo sh -c "printf '%s\n' '$line' >> '$file'"
+append_line() {
+  local file=$1 line=$2
+  if grep -qxF "$line" "$file" 2>/dev/null; then
+    skip "$file already has: $line"
+    return 0
   fi
-  ok "$file: $line"
+  if [[ $DRY_RUN == true ]]; then
+    printf '%s would append to %s:%s %s\n' "$DIM" "$file" "$RST" "$line"
+    return 0
+  fi
+  printf '%s\n' "$line" | sudo tee -a "$file" >/dev/null
+  ok "$file += $line"
 }
 
-# Regenerate grub.cfg, whichever wrapper this distro ships.
 regen_grub() {
   log "Regenerating GRUB configuration"
   if command -v update-grub >/dev/null; then
@@ -150,10 +167,7 @@ regen_grub() {
   fi
 }
 
-# Read KEY's value from /etc/default/grub. Manjaro quotes some values with
-# single quotes and leaves others bare, so strip whichever wrapping is present
-# -- assuming double quotes silently captures the entire line as the value.
-grub_value() {                        # grub_value <key>
+grub_value() {
   local key=$1 line
   line=$(grep -E "^${key}=" /etc/default/grub 2>/dev/null | head -1) || return 1
   [[ -z $line ]] && return 1
@@ -166,19 +180,16 @@ grub_value() {                        # grub_value <key>
   printf '%s' "$line"
 }
 
-# Write KEY="value", escaping the sed metacharacters that appear in kernel
-# command lines (& and | and backslash).
-grub_write() {                        # grub_write <key> <value>
+grub_write() {
   local key=$1 value=$2 esc
-  esc=$(printf '%s' "$value" | sed -e 's/[&|\\]/\\&/g')
+  esc=$(printf '%s' "$value" | sed -e 's/[&|\\"]/\\&/g')
   if grep -qE "^#?${key}=" /etc/default/grub; then
     run sudo sed -i -E "s|^#?${key}=.*|${key}=\"${esc}\"|" /etc/default/grub
   else
-    run sudo sh -c "printf '%s\n' '${key}=\"${value}\"' >> /etc/default/grub"
+    append_line /etc/default/grub "${key}=\"${value}\""
   fi
 }
 
-# Set KEY="VALUE" in /etc/default/grub, adding it if absent.
 set_grub_var() {
   local key=$1 value=$2 current
   current=$(grub_value "$key" || true)
@@ -191,7 +202,16 @@ set_grub_var() {
   return 0
 }
 
-# Strip comments and blank lines from a package manifest.
 read_pkg_list() {
   sed -E 's/#.*//' "$1" | tr -s '[:space:]' '\n' | grep -v '^$'
+}
+
+assert_hydrated() {
+  local f="$ROOT/config.local.sh" left
+  [[ -f $f ]] || die "config.local.sh is missing. Run: ./bin/redact hydrate"
+  left=$(grep -ohE '@@[A-Z][A-Z0-9_]*@@' "$f" 2>/dev/null | sort -u || true)
+  [[ -z $left ]] && return 0
+  die "config.local.sh still holds placeholder tokens:
+$(printf '%s\n' "$left" | sed 's/^/       /')
+     Fill them in from secrets.age:  ./bin/redact hydrate"
 }

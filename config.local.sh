@@ -1,0 +1,14 @@
+# shellcheck shell=bash disable=SC2034
+
+HOSTNAME_NEW="@@SYS_HOSTNAME@@"
+
+GIT_DEFAULT_IDENTITY="@@GIT_USER_1@@"
+GIT_IDENTITIES=(
+  "@@GIT_USER_1@@|@@GIT_EMAIL_1@@|@@GIT_USER_1@@_id_ed25519|66"
+  "@@GIT_USER_2@@|@@GIT_EMAIL_2@@|@@GIT_USER_2@@_id_ed25519|178"
+)
+
+SSH_CONFIG=$(cat <<'SSHCFG'
+@@SSH_EXTRA_CONFIG@@
+SSHCFG
+)

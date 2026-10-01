@@ -1,6 +1,3 @@
-# If removing anything in remove.txt would cascade into one of these,
-# 20-gnome-prune.sh aborts instead of proceeding.
-
 systemd
 glibc
 pacman

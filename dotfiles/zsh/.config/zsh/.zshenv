@@ -1,4 +1,3 @@
-# Only source this once
 if [[ -z "${__ZSH_SESS_VARS_SOURCED-}" ]]; then
   export __ZSH_SESS_VARS_SOURCED=1
   export BROWSER="librewolf"

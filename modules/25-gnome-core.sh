@@ -1,20 +1,30 @@
 #!/usr/bin/env bash
-# Ensure the GNOME surface this setup actually uses is present and enabled.
-
-log "Installing the GNOME core set"
-# shellcheck disable=SC2046  # splitting the manifest into arguments is the point
-pkg_install $(read_pkg_list "$ROOT/packages/gnome-core.txt")
+set -euo pipefail
+ROOT=${ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}
+# shellcheck source=/dev/null
+source "$ROOT/lib/bootstrap.sh"
 
 svc_enable gdm.service bluetooth.service
 
-# pipewire, with ALSA and PulseAudio compatibility
 if [[ $DRY_RUN != true ]]; then
   as_user systemctl --user enable pipewire.service pipewire-pulse.service wireplumber.service \
     || warn "could not enable the pipewire user units (no user session yet?) -- they are socket-activated anyway"
 fi
 
-# printing is not used
 svc_disable cups.service cups.socket
 
-# gvfs has no unit of its own; it is D-Bus activated.
-pkg_installed gvfs && ok "gvfs present (D-Bus activated, no unit to enable)"
+if pkg_installed gvfs; then
+  ok "gvfs present (D-Bus activated, no unit to enable)"
+else
+  warn "gvfs is not installed; Nautilus will not mount anything"
+fi
+
+if [[ -f /etc/udev/rules.d/61-gdm.rules ]]; then
+  warn "/etc/udev/rules.d/61-gdm.rules exists and may be forcing GDM onto X11"
+fi
+if grep -qE '^\s*WaylandEnable\s*=\s*false' /etc/gdm/custom.conf 2>/dev/null; then
+  log "Re-enabling Wayland in /etc/gdm/custom.conf"
+  run sudo sed -i -E 's/^\s*WaylandEnable\s*=\s*false/#WaylandEnable=false/' /etc/gdm/custom.conf
+fi
+
+exit 0

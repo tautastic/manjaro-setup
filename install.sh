@@ -1,76 +1,93 @@
 #!/usr/bin/env bash
-# Set up a minimal GNOME desktop on Manjaro.
-#
-#   ./install.sh                     run every module, in order
-#   ./install.sh --dry-run           show what would change, touch nothing
-#   ./install.sh --list              list the modules
-#   ./install.sh --only 20-gnome-prune [--only 60-dconf ...]
-#   ./install.sh --skip 10-nvidia
-#
-# Every module is idempotent: re-running a finished install makes no changes.
 
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export ROOT
 
+# shellcheck source=/dev/null
 source "$ROOT/lib/common.sh"
-source "$ROOT/config.sh"
 
-ONLY=(); SKIP=()
+usage() {
+  cat <<'USAGE'
+Set up a minimal GNOME desktop on Manjaro.
 
-usage() { sed -n '2,11p' "$0" | sed 's/^# \?//'; }
+  ./install.sh                     run every module, in order
+  ./install.sh --dry-run           show what would change, touch nothing
+  ./install.sh --list              list the modules
+  ./install.sh --only 60-dconf     run one module (repeatable)
+  ./install.sh --skip 10-nvidia    run everything but one (repeatable)
+  ./install.sh --prune             also remove packages the manifest does not list
+  ./install.sh --upgrade           pacman -Syu first
+  ./install.sh --yes               do not ask before removing packages
+
+Modules are ordinary scripts: ./modules/60-dconf.sh works on its own too.
+Re-running a finished install changes nothing.
+USAGE
+}
+
+modules() { basename -a "$ROOT"/modules/*.sh | sed 's/\.sh$//' | sort; }
+
+ONLY=(); SKIP=(); UPGRADE=false
 
 while [[ $# -gt 0 ]]; do
   case $1 in
     --dry-run) DRY_RUN=true; shift ;;
-    --only)    ONLY+=("$2"); shift 2 ;;
-    --skip)    SKIP+=("$2"); shift 2 ;;
-    --list)    basename -a "$ROOT"/modules/*.sh | sed 's/\.sh$//' ; exit 0 ;;
+    --prune)   PRUNE=true; shift ;;
+    --upgrade) UPGRADE=true; shift ;;
+    --yes)     ASSUME_YES=true; shift ;;
+    --only)    ONLY+=("${2:?--only needs a module name}"); shift 2 ;;
+    --skip)    SKIP+=("${2:?--skip needs a module name}"); shift 2 ;;
+    --list)    modules; exit 0 ;;
     -h|--help) usage; exit 0 ;;
     *)         die "unknown option: $1 (try --help)" ;;
   esac
 done
-export DRY_RUN
+export DRY_RUN PRUNE ASSUME_YES
+
+known=$(modules)
+for name in ${ONLY[@]+"${ONLY[@]}"} ${SKIP[@]+"${SKIP[@]}"}; do
+  grep -qxF "$name" <<< "$known" \
+    || die "no such module: $name
+$(printf '%s\n' "$known" | sed 's/^/     /')"
+done
 
 [[ -f /etc/manjaro-release ]] || warn "/etc/manjaro-release not found -- this targets Manjaro"
 [[ $EUID -eq 0 ]] && die "run this as your normal user; it calls sudo where it needs to"
-[[ -n ${TARGET_HOME:-} && -d $TARGET_HOME ]] || die "could not resolve the home directory of $TARGET_USER"
 
-# Without config.local.sh, config.sh's placeholder identities would be installed
-# as if they were real -- silently giving you a git setup for "gituser1".
-if [[ ! -f $ROOT/config.local.sh ]]; then
-  warn "config.local.sh is missing, so the placeholder identities in config.sh would be used."
-  warn "  Generate it first:  ./bin/redact hydrate"
-  warn "  (needs age: sudo pacman -S age)"
-  die "refusing to install with placeholder values"
-fi
+# shellcheck source=/dev/null
+source "$ROOT/config.sh"
+[[ -n ${TARGET_HOME:-} && -d $TARGET_HOME ]] || die "could not resolve the home directory of $TARGET_USER"
+assert_hydrated
 
 selected() {
   local name=$1 s
-  for s in "${SKIP[@]:-}"; do [[ $name == "$s" ]] && return 1; done
+  for s in ${SKIP[@]+"${SKIP[@]}"}; do [[ $name == "$s" ]] && return 1; done
   [[ ${#ONLY[@]} -eq 0 ]] && return 0
   for s in "${ONLY[@]}"; do [[ $name == "$s" ]] && return 0; done
   return 1
 }
 
-if [[ $DRY_RUN == true ]]; then
-  printf '\n%s*** DRY RUN -- nothing will be changed ***%s\n' "$YLW" "$RST"
-fi
-
-printf '\n%s%s%s  ->  user %s, home %s\n\n' "$BLU" "manjaro-setup" "$RST" "$TARGET_USER" "$TARGET_HOME"
+[[ $DRY_RUN == true ]] && printf '\n%s*** DRY RUN -- nothing will be changed ***%s\n' "$YLW" "$RST"
+printf '\n%smanjaro-setup%s  ->  user %s, home %s\n\n' "$BLU" "$RST" "$TARGET_USER" "$TARGET_HOME"
 
 log "Asking for sudo up front"
 [[ $DRY_RUN == true ]] || sudo -v || die "sudo is required"
+
+if [[ $UPGRADE == true ]]; then
+  log "Upgrading the system"
+  run sudo pacman -Syu --noconfirm
+fi
 
 ran=0; failed=()
 for mod in "$ROOT"/modules/*.sh; do
   name=$(basename "$mod" .sh)
   selected "$name" || { skip "module $name"; continue; }
 
-  printf '\n%s------ %s %s%s\n' "$BLU" "$name" "$(printf '%.0s-' $(seq 1 $((50 - ${#name}))))" "$RST"
-  # shellcheck source=/dev/null
-  ( source "$mod" )
+  rule=$(printf '%*s' $((50 - ${#name})) ''); rule=${rule// /-}
+  printf '\n%s------ %s %s%s\n' "$BLU" "$name" "$rule" "$RST"
+
+  bash "$mod"
   status=$?
   if [[ $status -ne 0 ]]; then
     failed+=("$name")
@@ -81,9 +98,7 @@ for mod in "$ROOT"/modules/*.sh; do
 done
 
 printf '\n'
-if [[ ${#failed[@]} -gt 0 ]]; then
-  die "stopped after ${failed[*]} -- fix the cause and re-run (earlier modules are no-ops)"
-fi
+[[ ${#failed[@]} -gt 0 ]] && die "stopped at ${failed[*]} -- fix the cause and re-run; earlier modules are no-ops"
 
 ok "$ran module(s) completed"
 if [[ $DRY_RUN != true ]]; then
@@ -92,7 +107,6 @@ if [[ $DRY_RUN != true ]]; then
 Next steps
   1. Reboot. The NVIDIA modules, the GRUB menu and the login shell all need it.
   2. At the GRUB menu, check that "Windows Boot Manager" is listed.
-  3. Log in, open a terminal: zinit fetches powerlevel10k and zsh-vi-mode once.
-  4. Copy your SSH keys into ~/.ssh if you have not yet, then run `gid list`.
+  3. Copy your SSH keys into ~/.ssh if you have not yet, then run `gid list`.
 NEXT
 fi

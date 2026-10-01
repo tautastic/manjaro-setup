@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# Files and settings Manjaro leaves behind after its packages are gone:
-# shell rc files, system-wide dconf defaults, and autostart entries.
+set -euo pipefail
+ROOT=${ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}
+# shellcheck source=/dev/null
+source "$ROOT/lib/bootstrap.sh"
 
 stamp=$(date +%Y%m%d-%H%M%S)
 
@@ -8,8 +10,6 @@ backup_away() {
   local path=$1
   [[ -e $path ]] || { skip "$path absent"; return 0; }
   [[ -L $path ]] && { skip "$path is a symlink we manage"; return 0; }
-  # Never back up a backup: the autostart glob below matches the .bak files
-  # this function creates, which on a re-run produced .bak.<ts>.bak.<ts>.
   [[ $path == *.bak.[0-9]* ]] && return 0
   warn "moving $path -> $path.bak.$stamp"
   if [[ -w $(dirname "$path") ]]; then
@@ -19,10 +19,6 @@ backup_away() {
   fi
 }
 
-### Shell rc files.
-# zsh reads ~/.zshenv, which points ZDOTDIR at ~/.config/zsh, so a leftover
-# ~/.zshrc is inert -- but it is confusing, and ~/.bashrc still runs for
-# non-login bash. Move both aside rather than deleting.
 log "Clearing Manjaro's shell configs"
 for f in .zshrc .zprofile .bashrc .bash_profile .bash_logout; do
   target="$TARGET_HOME/$f"
@@ -34,16 +30,10 @@ for f in .zshrc .zprofile .bashrc .bash_profile .bash_logout; do
   fi
 done
 
-# /etc/skel seeds every future user with the same thing.
 for f in /etc/skel/.zshrc /etc/skel/.bashrc /etc/skel/.bash_profile; do
   [[ -e $f ]] && grep -qi 'manjaro\|grml' "$f" 2>/dev/null && backup_away "$f"
 done
 
-### System-wide dconf defaults.
-# Manjaro ships /etc/dconf/db/local.d entries that enable dash-to-dock, arcmenu
-# and its own layout. Those are system defaults, so they win over an unset user
-# key -- our dconf/gnome.ini sets user keys, but anything it does not mention
-# would still come from here.
 log "Clearing Manjaro's system-wide dconf defaults"
 dconf_changed=false
 if [[ -d /etc/dconf/db/local.d ]]; then
@@ -59,7 +49,6 @@ else
   skip "no Manjaro dconf defaults found"
 fi
 
-### GSettings schema overrides.
 log "Clearing Manjaro's gsettings overrides"
 schema_changed=false
 while read -r f; do
@@ -72,7 +61,6 @@ else
   skip "no Manjaro schema overrides found"
 fi
 
-### Autostart entries (manjaro-hello, matray, the settings-manager notifier).
 log "Clearing Manjaro autostart entries"
 autostart_found=false
 for dir in /etc/xdg/autostart "$TARGET_HOME/.config/autostart"; do
@@ -85,7 +73,6 @@ for dir in /etc/xdg/autostart "$TARGET_HOME/.config/autostart"; do
 done
 [[ $autostart_found == false ]] && skip "no Manjaro autostart entries found"
 
-### Leftover GNOME Shell extensions from Manjaro's packages.
 if [[ -d /usr/share/gnome-shell/extensions ]]; then
   remaining=$(find /usr/share/gnome-shell/extensions -maxdepth 1 -mindepth 1 2>/dev/null | wc -l)
   if [[ $remaining -gt 0 ]]; then
@@ -95,3 +82,14 @@ if [[ -d /usr/share/gnome-shell/extensions ]]; then
     warn "  Find their owners with: pacman -Qo /usr/share/gnome-shell/extensions/<name>"
   fi
 fi
+
+shopt -s nullglob
+for dir in "$TARGET_HOME" /etc/skel; do
+  mapfile -t old < <(find "$dir" -maxdepth 1 -name "*.bak.[0-9]*" -printf "%T@ %p\\n" 2>/dev/null | sort -rn | tail -n +6 | cut -d" " -f2-)
+  for f in ${old[@]+"${old[@]}"}; do
+    warn "pruning stale backup $f"
+    run rm -rf "$f"
+  done
+done
+
+exit 0

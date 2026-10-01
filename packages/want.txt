@@ -1,3 +1,4 @@
+# filesystems and hardware
 acpid
 btrfs-progs
 cryptsetup
@@ -12,21 +13,25 @@ ntfs-3g
 dmidecode
 dmraid
 efibootmgr
+usbutils
+
+# network
 networkmanager
 openssh
-usbutils
-which
 curl
 wget
 rsync
-less
 
+# shell
 zsh
 zsh-completions
 zsh-syntax-highlighting
 stow
 xdg-user-dirs
+which
+less
 
+# cli
 ffmpeg
 7zip
 jq
@@ -39,14 +44,16 @@ eza
 perl-image-exiftool
 wl-clipboard
 
+# terminal and editors
 kitty
 vis
 yazi
 zathura
 zathura-pdf-mupdf
+
+# apps
 librewolf
 git
-
 gnome-disk-utility
 nautilus
 loupe
@@ -56,16 +63,42 @@ picard
 amberol
 discord
 
+# toolchains kept global on purpose
 gcc
 make
 go
 nvm
 
+# fonts
 noto-fonts
 noto-fonts-emoji
 ttf-jetbrains-mono
 ttf-jetbrains-mono-nerd
 ttf-scheherazade-new
 
+# theming and secrets
 qt6ct
 age
+
+# the GNOME set that stays after the prune
+gnome-shell
+mutter
+gdm
+gnome-control-center
+gnome-settings-daemon
+gnome-session
+gnome-keyring
+gnome-backgrounds
+gnome-menus
+xdg-desktop-portal-gnome
+xdg-desktop-portal-gtk
+gvfs
+gvfs-mtp
+pipewire
+pipewire-pulse
+pipewire-alsa
+lib32-pipewire
+wireplumber
+rtkit
+bluez
+bluez-utils

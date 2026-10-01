@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+ROOT=${ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}
+INI="$ROOT/dconf/gnome.ini"
+[[ -f $INI ]] || { echo "dconf-sync: $INI is missing" >&2; exit 1; }
+
+command -v dconf >/dev/null || { echo "dconf-sync: dconf not found" >&2; exit 1; }
+
+tmp=$(mktemp); trap 'rm -f "$tmp" "$tmp.dump"' EXIT
+dconf dump / > "$tmp.dump"
+
+awk -v dump="$tmp.dump" '
+function flush_section() {
+  if (section == "") return
+  printf "[%s]\n", section
+  n = 0
+  while ((getline line < dump) > 0) {
+    if (line ~ /^\[/) { cur = substr(line, 2, length(line) - 2); continue }
+    if (cur != section || line == "") continue
+    print line
+    n++
+  }
+  close(dump)
+  if (n == 0) print "# (no keys set)"
+  print ""
+}
+/^\[/ { flush_section(); section = substr($0, 2, length($0) - 2); next }
+{ next }
+END { flush_section() }
+' "$INI" > "$tmp"
+
+if cmp -s "$tmp" "$INI"; then
+  echo "dconf-sync: $INI is already current"
+  exit 0
+fi
+
+cp "$tmp" "$INI"
+echo "dconf-sync: updated $INI"
+echo "dconf-sync: review it with 'git diff dconf/gnome.ini' before committing"

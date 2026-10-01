@@ -1,12 +1,3 @@
-# Packages to remove from a stock Manjaro gnome-minimal install.
-# The GNOME apps, developer tools and games this setup does not use, plus
-# printing and pulseaudio. Manjaro's own additions live in
-# packages/manjaro-remove.txt.
-#
-# Missing packages are ignored. Anything whose removal would break a
-# dependency is skipped and reported; see modules/20-gnome-prune.sh.
-
-### GNOME core apps
 baobab
 epiphany
 gnome-calculator
@@ -38,19 +29,16 @@ gnome-software
 orca
 rygel
 
-### explicitly unwanted
 gnome-tour
 gnome-user-docs
 gnome-shell-extensions
 xterm
 
-### developer tools
 devhelp
 dconf-editor
 sysprof
 gnome-builder
 
-### games
 aisleriot
 four-in-a-row
 gnome-chess
@@ -69,12 +57,9 @@ quadrapassel
 swell-foop
 tali
 
-### printing
-# cups-pk-helper is a hard dependency of gnome-control-center, so it stays.
 cups
 system-config-printer
 
-### pulseaudio, replaced by pipewire
 pulseaudio
 pulseaudio-alsa
 pulseaudio-bluetooth

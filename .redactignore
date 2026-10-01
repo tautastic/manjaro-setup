@@ -1,4 +1,1 @@
-# Vendored upstream code: not ours to rewrite, and the yazi plugin README
-# contains a GitHub asset URL whose UUID would trip the hardware-UUID rule.
-dotfiles/yazi/.config/yazi/plugins/*
-dotfiles/kitty/.config/kitty/Earthsong.conf
+dotfiles/yazi/.config/yazi/plugins/full-border.yazi/*

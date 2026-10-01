@@ -1,0 +1,64 @@
+# essential userland, also covered by the base group
+systemd
+glibc
+pacman
+bash
+coreutils
+filesystem
+util-linux
+shadow
+sudo
+
+# boot and kernel
+grub
+efibootmgr
+mkinitcpio
+mkinitcpio-*
+linux[0-9]*
+linux-firmware
+linux-firmware-*
+amd-ucode
+intel-ucode
+
+# graphics, installed by mhwd rather than by this repo
+mhwd
+mhwd-*
+nvidia-*
+*-nvidia
+lib32-nvidia-*
+opencl-nvidia
+egl-*
+libva-*
+
+# Manjaro's own
+manjaro-release
+manjaro-keyring
+manjaro-system
+pacman-mirrors
+yay
+
+# desktop: losing any of these means no graphical login
+gnome-shell
+mutter
+gdm
+gnome-control-center
+gnome-settings-daemon
+gnome-session
+gnome-keyring
+xdg-desktop-portal-gnome
+gvfs
+pipewire
+pipewire-pulse
+wireplumber
+networkmanager
+bluez
+
+# the things I actually use
+kitty
+librewolf
+zsh
+git
+nautilus
+loupe
+showtime
+gnome-disk-utility

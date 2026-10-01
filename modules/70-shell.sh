@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# Make zsh the login shell. zinit fetches powerlevel10k and zsh-vi-mode on the
-# first interactive start.
+set -euo pipefail
+ROOT=${ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}
+# shellcheck source=/dev/null
+source "$ROOT/lib/bootstrap.sh"
 
 current_shell=$(getent passwd "$TARGET_USER" | cut -d: -f7)
 if [[ $current_shell == /usr/bin/zsh || $current_shell == /bin/zsh ]]; then
@@ -17,3 +19,5 @@ else
 fi
 
 ok "Open a new terminal; zinit will fetch powerlevel10k and zsh-vi-mode on first run."
+
+exit 0

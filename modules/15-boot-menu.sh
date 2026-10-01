@@ -1,25 +1,22 @@
 #!/usr/bin/env bash
-# Windows lives on its own drive with its own EFI System Partition. Teach the
-# Manjaro drive's GRUB to chainload it, so picking an OS is a menu entry at
-# boot rather than a trip into the BIOS boot device menu.
+set -euo pipefail
+ROOT=${ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}
+# shellcheck source=/dev/null
+source "$ROOT/lib/bootstrap.sh"
 
 pkg_install os-prober ntfs-3g
 
 grub_changed=false
 
-# os-prober is disabled by default in current GRUB for security reasons.
 set_grub_var GRUB_DISABLE_OS_PROBER false && grub_changed=true
-# A hidden menu would defeat the point of having a Windows entry.
 set_grub_var GRUB_TIMEOUT_STYLE menu && grub_changed=true
 if [[ "$(grep -E '^GRUB_TIMEOUT=' /etc/default/grub | cut -d= -f2 | tr -d '"')" == "0" ]]; then
   set_grub_var GRUB_TIMEOUT 5 && grub_changed=true
 fi
 
-CUSTOM_ENTRY=/etc/grub.d/40_custom
+CUSTOM_ENTRY=/etc/grub.d/41_manjaro-setup-windows
+LEGACY_ENTRY=/etc/grub.d/40_custom
 
-# Locate the Windows EFI loader ourselves. os-prober usually finds it, but it
-# silently misses ESPs that are not mounted, which is exactly the case here:
-# the Windows ESP is on a separate disk and nothing mounts it at boot.
 find_windows_esp() {
   local dev mnt tmp hit
   while read -r dev; do
@@ -46,7 +43,10 @@ osprober_out=$(sudo os-prober 2>/dev/null || true)
 
 if printf '%s' "$osprober_out" | grep -qi 'windows'; then
   ok "os-prober found Windows; GRUB will generate the entry itself"
-  # Drop a chainloader entry written by an earlier run, or Windows appears twice.
+  if [[ -f $LEGACY_ENTRY ]] && grep -q "manjaro-setup" "$LEGACY_ENTRY"; then
+    log "Removing the entry an older version wrote into $LEGACY_ENTRY"
+    run sudo rm -f "$LEGACY_ENTRY"
+  fi
   if [[ -f $CUSTOM_ENTRY ]] && grep -q 'manjaro-setup' "$CUSTOM_ENTRY"; then
     log "Removing the now-redundant chainloader entry"
     run sudo rm -f "$CUSTOM_ENTRY"
@@ -88,8 +88,6 @@ else
 fi
 
 if [[ ${win_found:-false} == true ]] && [[ $DRY_RUN != true ]]; then
-  # grub.cfg is 0600 root, so this must go through sudo -- a plain grep always
-  # fails for the invoking user and reported a missing entry that was there.
   if sudo grep -qi 'windows' /boot/grub/grub.cfg 2>/dev/null; then
     ok "grub.cfg contains a Windows entry"
   else
@@ -97,8 +95,6 @@ if [[ ${win_found:-false} == true ]] && [[ $DRY_RUN != true ]]; then
   fi
 fi
 
-# Windows keeps the RTC in local time by default; Linux keeps it in UTC. Left
-# alone, the clock jumps by the UTC offset on every switch.
 if [[ ${RTC_LOCAL_TIME:-false} == true ]]; then
   if [[ "$(timedatectl show -p LocalRTC --value)" == "yes" ]]; then
     skip "RTC already in local time"
@@ -112,3 +108,5 @@ elif [[ ${win_found:-false} == true ]]; then
   warn '    reg add "HKLM\SYSTEM\CurrentControlSet\Control\TimeZoneInformation" /v RealTimeIsUniversal /t REG_DWORD /d 1 /f'
   warn "  Or set RTC_LOCAL_TIME=true in config.sh to make Linux match Windows instead."
 fi
+
+exit 0

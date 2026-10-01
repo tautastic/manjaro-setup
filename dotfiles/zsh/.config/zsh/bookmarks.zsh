@@ -1,6 +1,3 @@
-# Directory bookmarks: `hash -d` named dirs + `cd && ls` aliases.
-# File bookmarks: open in $EDITOR.
-
 hash -d cf=~/.config
 hash -d cfmj=~/.config/manjaro-setup
 hash -d dc=~/Documents

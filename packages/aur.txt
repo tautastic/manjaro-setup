@@ -1,8 +1,6 @@
-# AUR packages, installed with yay. One per line; # starts a comment.
-
-zinit            # zsh plugin loader; provides /usr/share/zinit/zinit.zsh
+zinit
 claude-code
-localsend-bin    # AUR binary build
-resvg-git        # yazi SVG previews; no non-git resvg is packaged
-adwaita-qt6      # the Adwaita-Dark style qt6ct.conf selects
+localsend-bin
+resvg-git
+adwaita-qt6
 jetbrains-toolbox

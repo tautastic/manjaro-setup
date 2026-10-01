@@ -1,20 +1,24 @@
 #!/usr/bin/env bash
-# Render the git identity files and the p10k prompt table from the identity
-# table in config.sh.
-# Writes into dotfiles/ so 50-dotfiles.sh can symlink them like everything else.
+set -euo pipefail
+ROOT=${ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}
+# shellcheck source=/dev/null
+source "$ROOT/lib/bootstrap.sh"
 
-GIT_PKG="$ROOT/dotfiles/git/.config/git"
-ZSH_PKG="$ROOT/dotfiles/zsh/.config/zsh"
-mkdir -p "$GIT_PKG/identities"
+GIT_DIR="$TARGET_HOME/.config/git"
+ZSH_DIR="$TARGET_HOME/.config/zsh"
 
 ssh_command_for() { printf 'ssh -i %s/.ssh/%s -o IdentitiesOnly=yes' "$TARGET_HOME" "$1"; }
 
 default_email=""; default_key=""
 missing_keys=()
 
+if [[ $DRY_RUN != true ]]; then
+  mkdir -p "$GIT_DIR/identities" "$ZSH_DIR"
+fi
+
 for entry in "${GIT_IDENTITIES[@]}"; do
   IFS='|' read -r name email key color <<<"$entry"
-  cat <<IDENT | write_user_file "$GIT_PKG/identities/$name" 644
+  cat <<IDENT | write_user_file "$GIT_DIR/identities/$name" 644
 [user]
 	name = $name
 	email = $email
@@ -30,7 +34,7 @@ done
 
 [[ -n $default_email ]] || die "GIT_DEFAULT_IDENTITY '$GIT_DEFAULT_IDENTITY' is not in GIT_IDENTITIES"
 
-cat <<GITCFG | write_user_file "$GIT_PKG/config" 644
+cat <<GITCFG | write_user_file "$GIT_DIR/config" 644
 [core]
 	sshCommand = "$(ssh_command_for "$default_key")"
 
@@ -42,7 +46,6 @@ cat <<GITCFG | write_user_file "$GIT_PKG/config" 644
 	name = "$GIT_DEFAULT_IDENTITY"
 GITCFG
 
-# The three lookup tables prompt.zsh reads, followed by prompt.zsh itself.
 {
   printf 'typeset -gA _git_identity_name _git_identity_key _git_identity_color\n\n'
   printf '_git_identity_name=(\n'
@@ -62,10 +65,12 @@ GITCFG
   done
   printf ')\n\n'
   cat "$ROOT/src/prompt.zsh"
-} | write_user_file "$ZSH_PKG/git-identity.zsh" 644
+} | write_user_file "$ZSH_DIR/git-identity.zsh" 644
 
 if [[ ${#missing_keys[@]} -gt 0 ]]; then
   warn "SSH keys not found under $TARGET_HOME/.ssh:"
   printf '       %s\n' "${missing_keys[@]}" >&2
   warn "Copy them over from the old machine; git pushes will fail until you do."
 fi
+
+exit 0
