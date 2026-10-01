@@ -15,6 +15,11 @@ dmraid
 efibootmgr
 os-prober
 usbutils
+wireless-regdb
+fwupd
+fwupd-efi
+passim
+power-profiles-daemon
 
 # network
 networkmanager
@@ -31,6 +36,8 @@ stow
 xdg-user-dirs
 which
 less
+man-db
+man-pages
 
 # cli
 ffmpeg
@@ -55,6 +62,7 @@ zathura-pdf-mupdf
 # apps
 librewolf
 git
+gst-plugins-bad
 gnome-disk-utility
 nautilus
 loupe

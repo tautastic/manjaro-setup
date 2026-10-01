@@ -61,7 +61,11 @@ prune_extraneous() {
     || die "could not read the dependencies of the base package, so the automatic protection of essential packages is not working -- refusing to prune"
   local extra demote=() protected=() p
   extra=$(report_extraneous)
-  [[ -z $extra ]] && { skip "nothing installed that the manifest does not list"; return 0; }
+  if [[ -z $extra ]]; then
+    skip "nothing installed that the manifest does not list"
+    sweep_orphans
+    return
+  fi
 
   while IFS= read -r p; do
     [[ -z $p ]] && continue
@@ -72,7 +76,11 @@ prune_extraneous() {
     log "keeping ${#protected[@]} guarded package(s):"
     printf '       %s\n' "${protected[@]}"
   }
-  [[ ${#demote[@]} -eq 0 ]] && { skip "nothing to prune"; return 0; }
+  if [[ ${#demote[@]} -eq 0 ]]; then
+    skip "nothing to demote"
+    sweep_orphans
+    return
+  fi
 
   log "${#demote[@]} package(s) are installed explicitly but not wanted:"
   printf '       %s\n' "${demote[@]}"
